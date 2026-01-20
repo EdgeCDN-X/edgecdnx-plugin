@@ -124,6 +124,7 @@ jobs:
         run: |
           cd "${{ env.COREDNS_DIR }}"
           echo "Building CoreDNS for ${{ matrix.arch }}..."
+          go mod tidy
           make
           
           # Verify binary was created
