@@ -1,5 +1,9 @@
 name: Build CoreDNS with Patches
 
+env:
+  COREDNS_VERSION: '1.14.1'
+  COREDNS_SOURCE_URL: 'https://github.com/coredns/coredns/archive/refs/tags/v1.14.1.tar.gz'
+
 on:
   push:
     branches:
@@ -20,6 +24,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    env:
+      COREDNS_VERSION: ${{ inputs.coredns_version || env.COREDNS_VERSION }}
+      COREDNS_SOURCE_URL: ${{ inputs.source_url || env.COREDNS_SOURCE_URL }}
+
     strategy:
       matrix:
         arch: [amd64, arm64]
