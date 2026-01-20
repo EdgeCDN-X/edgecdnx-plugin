@@ -58,8 +58,8 @@ jobs:
       
       - name: Download CoreDNS source
         run: |
-          echo "Downloading CoreDNS from ${{ inputs.source_url }}"
-          curl -L -o coredns.tar.gz "${{ inputs.source_url }}"
+          echo "Downloading CoreDNS from ${{ env.COREDNS_SOURCE_URL }}..."
+          curl -L -o coredns.tar.gz "${{ env.COREDNS_SOURCE_URL }}"
       
       - name: Extract CoreDNS source
         run: |
@@ -87,7 +87,7 @@ jobs:
           fi
           
           # Create the new version string
-          NEW_VERSION="${{ inputs.coredns_version }}-edgecdnx-${VERSION_SUFFIX}"
+          NEW_VERSION="${{ env.COREDNS_VERSION }}-edgecdnx-${VERSION_SUFFIX}"
           echo "Setting CoreDNS version to: $NEW_VERSION"
           echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_ENV
           
@@ -100,7 +100,7 @@ jobs:
       
       - name: Verify patch file exists
         run: |
-          PATCH_FILE="patches/${{ inputs.coredns_version }}/coredns.patch"
+          PATCH_FILE="patches/${{ env.COREDNS_VERSION }}/coredns.patch"
           if [ ! -f "$PATCH_FILE" ]; then
             echo "Error: Patch file not found at $PATCH_FILE"
             echo "Available patches:"
@@ -112,8 +112,8 @@ jobs:
       - name: Apply patch
         run: |
           cd "${{ env.COREDNS_DIR }}"
-          echo "Applying patch from ../patches/${{ inputs.coredns_version }}/coredns.patch"
-          patch -p1 < ../patches/${{ inputs.coredns_version }}/coredns.patch
+          echo "Applying patch from ../patches/${{ env.COREDNS_VERSION }}/coredns.patch"
+          patch -p1 < ../patches/${{ env.COREDNS_VERSION }}/coredns.patch
           echo "Patch applied successfully"
       
       - name: Build CoreDNS binary
@@ -138,6 +138,6 @@ jobs:
       - name: Upload CoreDNS binary
         uses: actions/upload-artifact@v4
         with:
-          name: coredns-${{ inputs.coredns_version }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
+          name: coredns-${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
           path: ${{ env.COREDNS_DIR }}/coredns
           retention-days: 30
