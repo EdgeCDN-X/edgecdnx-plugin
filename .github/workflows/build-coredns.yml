@@ -24,16 +24,30 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
-    env:
-      COREDNS_VERSION: ${{ inputs.coredns_version || env.COREDNS_VERSION }}
-      COREDNS_SOURCE_URL: ${{ inputs.source_url || env.COREDNS_SOURCE_URL }}
 
     strategy:
       matrix:
         arch: [amd64, arm64]
     
     steps:
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        run: |
+          COREDNS_VERSION="${{ inputs.coredns_version }}"
+          SOURCE_URL="${{ inputs.source_url }}"
+
+          if [ -z "$COREDNS_VERSION" ]; then
+            COREDNS_VERSION="1.14.1"
+          fi
+
+          if [ -z "$SOURCE_URL" ]; then
+            SOURCE_URL="https://github.com/coredns/coredns/archive/refs/tags/v1.14.1.tar.gz"
+          fi
+
+          echo "COREDNS_VERSION=$COREDNS_VERSION" >> $GITHUB_ENV
+          echo "COREDNS_SOURCE_URL=$SOURCE_URL" >> $GITHUB_ENV
+
       - name: Checkout repository
         uses: actions/checkout@v4
       
