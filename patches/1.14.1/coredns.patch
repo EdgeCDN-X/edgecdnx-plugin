@@ -1,0 +1,49 @@
+diff --git a/core/dnsserver/zdirectives.go b/core/dnsserver/zdirectives.go
+index c356740c1..ca8b616ad 100644
+--- a/core/dnsserver/zdirectives.go
++++ b/core/dnsserver/zdirectives.go
+@@ -68,4 +68,5 @@ var Directives = []string{
+ 	"sign",
+ 	"view",
+ 	"nomad",
++	"edgecdnx",
+ }
+diff --git a/core/plugin/zplugin.go b/core/plugin/zplugin.go
+index d080cc5f9..169e716ec 100644
+--- a/core/plugin/zplugin.go
++++ b/core/plugin/zplugin.go
+@@ -62,4 +62,5 @@ import (
+ 	_ "github.com/coredns/coredns/plugin/tsig"
+ 	_ "github.com/coredns/coredns/plugin/view"
+ 	_ "github.com/coredns/coredns/plugin/whoami"
++	_ "github.com/EdgeCDN-X/edgecdnx-plugin"
+ )
+diff --git a/go.mod b/go.mod
+index 427e74c20..28dc025f3 100644
+--- a/go.mod
++++ b/go.mod
+@@ -5,6 +5,7 @@ module github.com/coredns/coredns
+ go 1.24.0
+
+ require (
++	github.com/EdgeCDN-X/edgecdnx-plugin v0.0.0
+ 	github.com/Azure/azure-sdk-for-go v68.0.0+incompatible
+ 	github.com/Azure/go-autorest/autorest v0.11.30
+ 	github.com/Azure/go-autorest/autorest/azure/auth v0.5.13
+@@ -201,3 +202,5 @@ require (
+ 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
+ 	sigs.k8s.io/yaml v1.6.0 // indirect
+ )
++
++replace github.com/EdgeCDN-X/edgecdnx-plugin => ../
+\ No newline at end of file
+diff --git a/plugin.cfg b/plugin.cfg
+index 1612a9cec..5055e175a 100644
+--- a/plugin.cfg
++++ b/plugin.cfg
+@@ -77,3 +77,4 @@ on:github.com/coredns/caddy/onevent
+ sign:sign
+ view:view
+ nomad:nomad
++edgecdnx:github.com/EdgeCDN-X/edgecdnx-plugin
+\ No newline at end of file

@@ -1,0 +1,120 @@
+name: Build CoreDNS with Patches
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      coredns_version:
+        description: 'CoreDNS version to build (e.g., 1.14.1)'
+        required: false
+        type: string
+        default: '1.14.1'
+      source_url:
+        description: 'URL to CoreDNS tar.gz source code'
+        required: false
+        type: string
+        default: 'https://github.com/coredns/coredns/archive/refs/tags/v1.14.1.tar.gz'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      
+      - name: Download CoreDNS source
+        run: |
+          echo "Downloading CoreDNS from ${{ inputs.source_url }}"
+          curl -L -o coredns.tar.gz "${{ inputs.source_url }}"
+      
+      - name: Extract CoreDNS source
+        run: |
+          echo "Extracting CoreDNS source..."
+          tar -xzf coredns.tar.gz
+          
+          # Find the extracted directory (usually coredns-X.Y.Z)
+          EXTRACTED_DIR=$(tar -tzf coredns.tar.gz | head -1 | cut -f1 -d"/")
+          echo "COREDNS_DIR=$EXTRACTED_DIR" >> $GITHUB_ENV
+          echo "Extracted to: $EXTRACTED_DIR"
+      
+      - name: Update CoreDNS version
+        run: |
+          cd "${{ env.COREDNS_DIR }}"
+          
+          # Determine version suffix based on trigger type
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            # For tagged commits, use the tag name
+            VERSION_SUFFIX="${{ github.ref_name }}"
+            echo "Building from tag: $VERSION_SUFFIX"
+          else
+            # For push to main, use short commit SHA
+            VERSION_SUFFIX="${GITHUB_SHA:0:7}"
+            echo "Building from commit: $VERSION_SUFFIX"
+          fi
+          
+          # Create the new version string
+          NEW_VERSION="${{ inputs.coredns_version }}-edgecdnx-${VERSION_SUFFIX}"
+          echo "Setting CoreDNS version to: $NEW_VERSION"
+          echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_ENV
+          
+          # Update version.go file
+          sed -i 's/CoreVersion = "[^"]*"/CoreVersion = "'"$NEW_VERSION"'"/' coremain/version.go
+          
+          # Verify the change
+          echo "Updated version.go:"
+          grep "CoreVersion" coremain/version.go
+      
+      - name: Verify patch file exists
+        run: |
+          PATCH_FILE="patches/${{ inputs.coredns_version }}/coredns.patch"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "Error: Patch file not found at $PATCH_FILE"
+            echo "Available patches:"
+            ls -la patches/ || echo "No patches directory found"
+            exit 1
+          fi
+          echo "Found patch file: $PATCH_FILE"
+      
+      - name: Apply patch
+        run: |
+          cd "${{ env.COREDNS_DIR }}"
+          echo "Applying patch from ../patches/${{ inputs.coredns_version }}/coredns.patch"
+          patch -p1 < ../patches/${{ inputs.coredns_version }}/coredns.patch
+          echo "Patch applied successfully"
+      
+      - name: Build CoreDNS binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          cd "${{ env.COREDNS_DIR }}"
+          echo "Building CoreDNS for ${{ matrix.arch }}..."
+          make
+          
+          # Verify binary was created
+          if [ -f "coredns" ]; then
+            echo "CoreDNS binary built successfully for ${{ matrix.arch }}"
+            file coredns
+          else
+            echo "Error: CoreDNS binary not found after build"
+            exit 1
+          fi
+
+      - name: Upload CoreDNS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: coredns-${{ inputs.coredns_version }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
+          path: ${{ env.COREDNS_DIR }}/coredns
+          retention-days: 30
