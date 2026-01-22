@@ -2,6 +2,7 @@ package edgecdnxplugin
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sync"
 
@@ -22,6 +23,27 @@ type ServiceManager struct {
 	Informer cache.SharedIndexInformer
 	Sync     *sync.RWMutex
 	Services []infrastructurev1alpha1.Service
+}
+
+func (sm *ServiceManager) GetServiceCacheType(qname string) (string, error) {
+	log.Debug(fmt.Sprintf("edgecdnx: Looking up Service Cache type for %s", qname))
+
+	sm.Sync.RLock()
+	defer sm.Sync.RUnlock()
+
+	for _, service := range sm.Services {
+		if fmt.Sprintf("%s.", service.Spec.Domain) == qname {
+			return service.Spec.Cache, nil
+		}
+
+		for _, alias := range service.Spec.HostAliases {
+			if fmt.Sprintf("%s.", alias.Name) == qname {
+				return service.Spec.Cache, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("Could not get Service Cache type for %s", qname)
 }
 
 func NewServiceManager(factory dynamicinformer.DynamicSharedInformerFactory, config ServiceManagerConfiguration) *ServiceManager {

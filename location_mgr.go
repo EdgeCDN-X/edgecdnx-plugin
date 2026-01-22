@@ -37,6 +37,18 @@ type HashFilters struct {
 	Qtype uint16
 }
 
+func (l LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.Location, error) {
+	l.Sync.RLock()
+	defer l.Sync.RUnlock()
+
+	location, exists := l.Locations[name]
+	if !exists {
+		return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
+	}
+
+	return location, nil
+}
+
 func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, hashInput string, filters HashFilters) (infrastructurev1alpha1.NodeSpec, error) {
 	filteredNodes := make([]infrastructurev1alpha1.NodeSpec, 0)
 
