@@ -117,18 +117,16 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 						log.Error(fmt.Sprintf("edgecdnxgeolookup: Fallback location %s not found", fbLoc))
 						continue
 					}
-					node, err = e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
+					node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
 					if err == nil {
 						log.Debug(fmt.Sprintf("edgecdnxgeolookup: Fallback to location %s successful", fbLoc))
-						break
+						return e.BuildNodeReponse(node, w, r)
 					}
 					log.Debug(fmt.Sprintf("edgecdnxgeolookup: Fallback to location %s failed - %v", fbLoc, err))
 				}
 
-				if err != nil {
-					log.Error(fmt.Sprintf("edgecdnxgeolookup: No nodes found for request %s - %v", state.Name(), err))
-					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-				}
+				log.Error(fmt.Sprintf("edgecdnxgeolookup: No nodes found for request %s - %v", state.Name(), err))
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
 			return e.BuildNodeReponse(node, w, r)
