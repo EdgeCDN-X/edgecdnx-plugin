@@ -79,16 +79,16 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	// If requesting A or AAAA, we do the routing
 	if state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA {
-		cache, err := e.ServiceManager.GetServiceCacheType(qname)
+		service, err := e.ServiceManager.GetService(qname)
 
 		if err == nil {
 			//Cache type found
 			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state)
 
-			if !prefixRouted || !e.LocationManager.HasCacheType(cache, locationName) {
-				locationName, err = e.LocationManager.PerformGeoLookup(ctx, cache)
+			if !prefixRouted || !e.LocationManager.HasCacheType(service.Spec.Cache, locationName) {
+				locationName, err = e.LocationManager.PerformGeoLookup(ctx, service.Spec.Cache)
 				if err != nil {
-					log.Infof("edgecdnx: GeoLookup failed: %v", err)
+					log.Errorf("edgecdnx: GeoLookup failed: %v", err)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
 			}
@@ -102,7 +102,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			log.Debug(fmt.Sprintf("edgecdnxgeolookup: Routing to location: %s\n", location.Name))
 
 			filter := HashFilters{
-				Cache: cache,
+				Cache: service.Spec.Cache,
 				Qtype: state.Req.Question[0].Qtype,
 			}
 

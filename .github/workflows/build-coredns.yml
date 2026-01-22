@@ -144,3 +144,41 @@ jobs:
           name: coredns-${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
           path: ${{ env.COREDNS_DIR }}/coredns
           retention-days: 30
+
+  docker-image:
+    needs: build 
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_LOGIN }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+  
+      - name: Download CoreDNS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: coredns-${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
+          path: ./bin
+
+      - name: Prepare binary
+        run: |
+          mv ./bin/coredns ./coredns
+          chmod +x ./coredns
+
+      - name: Build Docker image (native)
+        run: |
+          docker build -t fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }} .
+
+      - name: Push image
+        run: |
+          docker push fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}

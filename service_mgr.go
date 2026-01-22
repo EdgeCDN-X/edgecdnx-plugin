@@ -25,25 +25,25 @@ type ServiceManager struct {
 	Services []infrastructurev1alpha1.Service
 }
 
-func (sm *ServiceManager) GetServiceCacheType(qname string) (string, error) {
-	log.Debug(fmt.Sprintf("edgecdnx: Looking up Service Cache type for %s", qname))
+func (sm *ServiceManager) GetService(qname string) (infrastructurev1alpha1.Service, error) {
+	log.Debug(fmt.Sprintf("edgecdnx: Looking up Service for Q %s", qname))
 
 	sm.Sync.RLock()
 	defer sm.Sync.RUnlock()
 
 	for _, service := range sm.Services {
 		if fmt.Sprintf("%s.", service.Spec.Domain) == qname {
-			return service.Spec.Cache, nil
+			return service, nil
 		}
 
 		for _, alias := range service.Spec.HostAliases {
 			if fmt.Sprintf("%s.", alias.Name) == qname {
-				return service.Spec.Cache, nil
+				return service, nil
 			}
 		}
 	}
 
-	return "", fmt.Errorf("Could not get Service Cache type for %s", qname)
+	return infrastructurev1alpha1.Service{}, fmt.Errorf("Could not get Service Cache type for %s", qname)
 }
 
 func NewServiceManager(factory dynamicinformer.DynamicSharedInformerFactory, config ServiceManagerConfiguration) *ServiceManager {
