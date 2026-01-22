@@ -128,9 +128,6 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			}
 
 			return e.BuildNodeReponse(node, w, r)
-		} else {
-			log.Debug(fmt.Sprintf("edgecdnxgeolookup: No service found for %s, passing to next plugin", qname))
-			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 	}
 
