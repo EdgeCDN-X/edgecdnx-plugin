@@ -30,6 +30,7 @@ type LocationManager struct {
 	Informer  cache.SharedIndexInformer
 	Sync      *sync.RWMutex
 	Locations map[string]infrastructurev1alpha1.Location
+	Config    LocationManagerConfiguration
 }
 
 type HashFilters struct {
@@ -208,6 +209,7 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 		fac:       factory,
 		Sync:      &sync.RWMutex{},
 		Locations: make(map[string]infrastructurev1alpha1.Location),
+		Config:    config,
 	}
 
 	// TODO populate caches based on location name

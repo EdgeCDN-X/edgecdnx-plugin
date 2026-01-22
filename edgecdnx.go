@@ -45,8 +45,7 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, w dns.R
 
 	if state.Req.Question[0].Qtype == dns.TypeA {
 		res := new(dns.A)
-		// TODO, Perhaps move this block to one of the managers and use the TTL value from there
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}
+		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: e.LocationManager.Config.RecrodTTL}
 		parsed := net.ParseIP(node.Ipv4)
 		res.A = parsed
 		m.Answer = append(m.Answer, res)
@@ -54,8 +53,7 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, w dns.R
 
 	if state.Req.Question[0].Qtype == dns.TypeAAAA {
 		res := new(dns.AAAA)
-		// TODO, Perhaps move this block to one of the managers and use the TTL value from there
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60}
+		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: e.LocationManager.Config.RecrodTTL}
 		parsed := net.ParseIP(node.Ipv6)
 		res.AAAA = parsed
 		m.Answer = append(m.Answer, res)
