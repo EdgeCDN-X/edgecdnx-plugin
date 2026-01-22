@@ -214,6 +214,29 @@ jobs:
           username: ${{ secrets.DOCKER_LOGIN }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        run: |
+          COREDNS_VERSION="${{ inputs.coredns_version }}"
+          SOURCE_URL="${{ inputs.source_url }}"
+          if [ -z "$COREDNS_VERSION" ]; then
+            COREDNS_VERSION="1.14.1"
+          fi
+          # Determine version suffix based on trigger type
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            # For tagged commits, use the tag name
+            VERSION_SUFFIX="${{ github.ref_name }}"
+            echo "Building from tag: $VERSION_SUFFIX"
+          else
+            # For push to main, use short commit SHA
+            VERSION_SUFFIX="${GITHUB_SHA:0:7}"
+            echo "Building from commit: $VERSION_SUFFIX"
+          fi
+          # Create the new version string
+          echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_ENV
+          echo "COREDNS_VERSION=$COREDNS_VERSION" >> $GITHUB_ENV
+
       - name: Create and push multi-arch manifest
         run: |
           # Multi-arch tag
