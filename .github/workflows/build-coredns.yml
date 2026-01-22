@@ -164,6 +164,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set version suffix
+        run: |
+          # Determine version suffix based on trigger type
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            # For tagged commits, use the tag name
+            VERSION_SUFFIX="${{ github.ref_name }}"
+            echo "Building from tag: $VERSION_SUFFIX"
+          else
+            # For push to main, use short commit SHA
+            VERSION_SUFFIX="${GITHUB_SHA:0:7}"
+            echo "Building from commit: $VERSION_SUFFIX"
+          fi
+          
+          # Create the new version string
+          echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_ENV
+
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_LOGIN }}
