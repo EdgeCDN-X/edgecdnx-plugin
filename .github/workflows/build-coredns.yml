@@ -25,7 +25,6 @@ on:
 
 jobs:
   build:
-
     strategy:
       matrix:
         include:
@@ -150,37 +149,41 @@ jobs:
           path: ${{ env.COREDNS_DIR }}/coredns
           retention-days: 30
 
-  # docker-image:
-  #   needs: build 
-  #   runs-on: ubuntu-latest
+  docker-image:
+    needs: build 
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            image: ubuntu-latest
+          - arch: arm64
+            image: ubuntu-24.04-arm
 
-  #   strategy:
-  #     matrix:
-  #       arch: [amd64, arm64]
+    runs-on: ${{ matrix.image }}
 
-  #   steps:
-  #     - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - uses: docker/login-action@v3
-  #       with:
-  #         username: ${{ secrets.DOCKER_LOGIN }}
-  #         password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_LOGIN }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
   
-  #     - name: Download CoreDNS binary
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: coredns-${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
-  #         path: ./bin
+      - name: Download CoreDNS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: coredns-${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
+          path: ./bin
 
-  #     - name: Prepare binary
-  #       run: |
-  #         mv ./bin/coredns ./coredns
-  #         chmod +x ./coredns
+      - name: Prepare binary
+        run: |
+          mv ./bin/coredns ./coredns
+          chmod +x ./coredns
 
-  #     - name: Build Docker image (native)
-  #       run: |
-  #         docker build -t fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }} .
+      - name: Build Docker image (native)
+        run: |
+          docker build -t fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }} .
 
-  #     - name: Push image
-  #       run: |
-  #         docker push fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
+      - name: Push image
+        run: |
+          docker push fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
