@@ -25,18 +25,11 @@ on:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
+
     strategy:
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm64
-
-    runs-on: ${{ matrix.runner }}
-
-    env:
-      GOARCH: ${{ matrix.arch }}
+        arch: [amd64, arm64]
     
     steps:
       - name: Resolve build variables
@@ -154,14 +147,11 @@ jobs:
 
   docker-image:
     needs: build 
+    runs-on: ubuntu-latest
+
     strategy:
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm64
-    runs-on: ${{ matrix.runner }}
+        arch: [amd64, arm64]
 
     steps:
       - uses: actions/checkout@v4
