@@ -127,6 +127,7 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, cache string) (st
 		for attrName, attribute := range location.Spec.GeoLookup.Attributes {
 			if lookupFunc := metadata.ValueFunc(ctx, attrName); lookupFunc != nil {
 				if lookupValue := lookupFunc(); lookupValue != "" {
+					log.Debugf("edgecdnx: looking up attribute %s with value %s", attrName, lookupValue)
 					for _, attributeValue := range attribute.Values {
 						if attributeValue.Value == lookupValue {
 							log.Debug(fmt.Sprintf("edgecdnxgeolookup: found attribute %s with value %s", attrName, lookupValue))
