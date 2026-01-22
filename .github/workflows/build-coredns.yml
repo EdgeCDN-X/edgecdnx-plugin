@@ -27,7 +27,7 @@ jobs:
   build:
     strategy:
       matrix:
-        arch:
+        include:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
