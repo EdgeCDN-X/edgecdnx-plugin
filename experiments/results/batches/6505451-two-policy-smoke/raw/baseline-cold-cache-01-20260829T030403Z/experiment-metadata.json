@@ -1,0 +1,24 @@
+{
+  "run_id": "baseline-cold-cache-01-20260829T030403Z",
+  "git_commit": "6505451e5be5c85b930256b154535f235f63f50d",
+  "variant": "baseline",
+  "scenario": "cold-cache",
+  "repetition": 1,
+  "profile": "smoke",
+  "random_seed": 20260829,
+  "job_uid": "5dfcaf22-77e2-466b-8524-6d3aa6d303cb",
+  "k6_pod": "edgeroute-k6-88bxd",
+  "k6_exit_code": 0,
+  "start_timestamp": "2026-08-29T03:04:03.6901063Z",
+  "end_timestamp": "2026-08-29T03:04:26.8450839Z",
+  "container_tags": {
+    "coredns": "edgeroute-coredns:baseline-6505451",
+    "coredns_id": "sha256:a06067e80a5ab8370ab8cba5a1a0dc5dc448ee696aab523286c1d35281fb30ed",
+    "k6_upstream": "grafana/k6:1.8.0",
+    "k6_runtime": "edgeroute-k6:1.8.0"
+  },
+  "cluster_config": "deploy/kind/cluster.yaml; 3 kind nodes; logical Sydney/Singapore regions",
+  "algorithm_config": "deterministic upstream modulo hash + active health + fallback",
+  "injection_delay_seconds": 4,
+  "host_hardware": "12th Gen Intel(R) Core(TM) i5-12400F"
+}

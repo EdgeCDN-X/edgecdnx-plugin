@@ -1,0 +1,40 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Zone
+metadata:
+  name: edgeroute-test
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  zone: edgeroute.test
+  email: noc.edgeroute.test
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Service
+metadata:
+  name: video-edgeroute-test
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  name: video.edgeroute.test
+  domain: video.edgeroute.test
+  cache: hls
+  certificate: {}
+  customer: {name: edgeroute-lab, id: 1}
+  cacheKey: {}
+  waf: {enabled: false}
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: PrefixList
+metadata:
+  name: sydney-lab-clients
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  source: Static
+  destination: sydney
+  prefix:
+    v4:
+      - {address: 198.0.0.0, size: 8}

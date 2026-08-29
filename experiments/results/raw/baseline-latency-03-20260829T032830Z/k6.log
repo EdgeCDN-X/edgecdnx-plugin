@@ -1,0 +1,124 @@
+time="2026-08-29T03:28:32Z" level=warning msg="There were unknown fields in the options exported in the script" error="json: unknown field \"gracefulStop\""
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /scripts/hls.js
+        output: json (/results/k6-metrics.jsonl)
+
+     scenarios: (100.00%) 1 scenario, 5 max VUs, 48s max duration (incl. graceful stop):
+              * default: Up to 5 looping VUs for 18s over 5 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+running (01.0s), 1/5 VUs, 4 complete and 0 interrupted iterations
+default   [   6% ] 1/5 VUs  01.0s/18.0s
+
+running (02.0s), 1/5 VUs, 9 complete and 0 interrupted iterations
+default   [  11% ] 1/5 VUs  02.0s/18.0s
+
+running (03.0s), 2/5 VUs, 18 complete and 0 interrupted iterations
+default   [  17% ] 2/5 VUs  03.0s/18.0s
+
+running (04.0s), 2/5 VUs, 28 complete and 0 interrupted iterations
+default   [  22% ] 2/5 VUs  04.0s/18.0s
+
+running (05.0s), 2/5 VUs, 38 complete and 0 interrupted iterations
+default   [  28% ] 2/5 VUs  05.0s/18.0s
+
+running (06.0s), 2/5 VUs, 45 complete and 0 interrupted iterations
+default   [  33% ] 2/5 VUs  06.0s/18.0s
+
+running (07.0s), 2/5 VUs, 49 complete and 0 interrupted iterations
+default   [  39% ] 2/5 VUs  07.0s/18.0s
+
+running (08.0s), 2/5 VUs, 57 complete and 0 interrupted iterations
+default   [  44% ] 2/5 VUs  08.0s/18.0s
+
+running (09.0s), 3/5 VUs, 62 complete and 0 interrupted iterations
+default   [  50% ] 3/5 VUs  09.0s/18.0s
+
+running (10.0s), 4/5 VUs, 74 complete and 0 interrupted iterations
+default   [  56% ] 4/5 VUs  10.0s/18.0s
+
+running (11.0s), 5/5 VUs, 85 complete and 0 interrupted iterations
+default   [  61% ] 5/5 VUs  11.0s/18.0s
+
+running (12.0s), 5/5 VUs, 104 complete and 0 interrupted iterations
+default   [  67% ] 5/5 VUs  12.0s/18.0s
+
+running (13.0s), 5/5 VUs, 114 complete and 0 interrupted iterations
+default   [  72% ] 5/5 VUs  13.0s/18.0s
+
+running (14.0s), 5/5 VUs, 131 complete and 0 interrupted iterations
+default   [  78% ] 5/5 VUs  14.0s/18.0s
+
+running (15.0s), 5/5 VUs, 140 complete and 0 interrupted iterations
+default   [  83% ] 5/5 VUs  15.0s/18.0s
+
+running (16.0s), 5/5 VUs, 158 complete and 0 interrupted iterations
+default   [  89% ] 5/5 VUs  16.0s/18.0s
+
+running (17.0s), 4/5 VUs, 166 complete and 0 interrupted iterations
+default   [  94% ] 4/5 VUs  17.0s/18.0s
+
+running (18.0s), 3/5 VUs, 180 complete and 0 interrupted iterations
+default   [ 100% ] 3/5 VUs  18.0s/18.0s
+
+
+  █ THRESHOLDS 
+
+    hls_playlist_failures
+    ✓ 'count>=0' count=0
+
+    hls_segment_failures
+    ✓ 'count>=0' count=0
+
+    hls_session_failures
+    ✓ 'rate>=0' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 549     29.146031/s
+    checks_succeeded...: 100.00% 549 out of 549
+    checks_failed......: 0.00%   0 out of 549
+
+    ✓ master playlist is 200
+    ✓ media playlist is 200
+    ✓ segment is 200
+
+    CUSTOM
+    hls_playlist_failures..........: 0      0/s
+    hls_playlist_requests..........: 366    19.430687/s
+    hls_segment_duration...........: avg=63.1ms   min=653.4µs  med=1.34ms   max=507.27ms p(90)=500.27ms p(95)=502.51ms p(99)=504.3ms
+    hls_segment_failures...........: 0      0/s
+    hls_segment_requests...........: 183    9.715344/s
+    hls_session_failures...........: 0.00%  0 out of 183
+    selected_edge_node.............: 549    29.146031/s
+
+    HTTP
+    http_req_duration..............: avg=40.11ms  min=141.09µs med=804.89µs max=507.27ms p(90)=156.02ms p(95)=173.73ms p(99)=503.1ms
+      { expected_response:true }...: avg=40.11ms  min=141.09µs med=804.89µs max=507.27ms p(90)=156.02ms p(95)=173.73ms p(99)=503.1ms
+    http_req_failed................: 0.00%  0 out of 578
+    http_reqs......................: 578    30.685621/s
+
+    EXECUTION
+    iteration_duration.............: avg=329.91ms min=202.19ms med=204.83ms max=1.24s    p(90)=960.77ms p(95)=1.17s    p(99)=1.23s  
+    iterations.....................: 183    9.715344/s
+    vus............................: 3      min=1        max=5
+    vus_max........................: 5      min=5        max=5
+
+    NETWORK
+    data_received..................: 211 MB 11 MB/s
+    data_sent......................: 118 kB 6.3 kB/s
+
+
+
+
+running (18.8s), 0/5 VUs, 183 complete and 0 interrupted iterations
+default ✓ [ 100% ] 0/5 VUs  18s

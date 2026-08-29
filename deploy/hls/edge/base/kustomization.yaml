@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: edge-data
+resources:
+  - deployment.yaml
+  - service.yaml
+configMapGenerator:
+  - name: edge-config
+    files:
+      - nginx.conf
+      - toxiproxy.json
+      - exporter.hcl
+generatorOptions:
+  disableNameSuffixHash: true

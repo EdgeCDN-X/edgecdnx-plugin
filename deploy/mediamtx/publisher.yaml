@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ffmpeg-publisher
+  labels:
+    app.kubernetes.io/name: ffmpeg-publisher
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ffmpeg-publisher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ffmpeg-publisher
+        app.kubernetes.io/part-of: edgeroute
+    spec:
+      containers:
+        - name: ffmpeg
+          image: lscr.io/linuxserver/ffmpeg:8.1.2@sha256:2e7000921be8de2704a4f27dfd3d988562697a346eaabb937a81046c306f0af7
+          imagePullPolicy: IfNotPresent
+          args: [-re, -f, lavfi, -i, 'testsrc2=size=1280x720:rate=30', -f, lavfi, -i, 'sine=frequency=1000:sample_rate=48000', -c:v, libx264, -preset, veryfast, -tune, zerolatency, -pix_fmt, yuv420p, -g, '60', -c:a, aac, -b:a, 128k, -f, flv, 'rtmp://mediamtx:1935/live/demo']
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '2', memory: 512Mi}

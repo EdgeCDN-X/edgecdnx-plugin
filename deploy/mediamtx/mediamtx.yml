@@ -1,0 +1,33 @@
+logLevel: info
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - {action: publish}
+      - {action: read}
+      - {action: playback}
+  - user: any
+    pass:
+    ips: [127.0.0.1, '::1', 10.244.0.0/16]
+    permissions:
+      - {action: api}
+      - {action: metrics}
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+rtsp: no
+rtmp: yes
+rtmpAddress: :1935
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
+hlsVariant: lowLatency
+hlsSegmentDuration: 2s
+webrtc: no
+srt: no
+paths:
+  live/demo:
+    source: publisher

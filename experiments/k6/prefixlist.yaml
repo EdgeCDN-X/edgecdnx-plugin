@@ -1,0 +1,14 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: PrefixList
+metadata:
+  name: day6-kind-clients
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+    edgeroute.io/experiment: day6
+spec:
+  source: Static
+  destination: sydney
+  prefix:
+    v4:
+      - {address: 10.244.0.0, size: 16}

@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: edge-data
+resources:
+  - deployment.yaml
+  - service.yaml
+  - publisher.yaml
+configMapGenerator:
+  - name: mediamtx-config
+    files:
+      - mediamtx.yml
+generatorOptions:
+  disableNameSuffixHash: true

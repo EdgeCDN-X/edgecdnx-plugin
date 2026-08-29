@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediamtx
+  labels:
+    app.kubernetes.io/name: mediamtx
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mediamtx
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mediamtx
+        app.kubernetes.io/part-of: edgeroute
+    spec:
+      containers:
+        - name: mediamtx
+          image: bluenviron/mediamtx:1.18.2@sha256:f8628851106cc053f9175b248050bb5f362a6e65abd72297c167a1cb5a9a3be2
+          imagePullPolicy: IfNotPresent
+          args: [/config/mediamtx.yml]
+          ports:
+            - {name: rtmp, containerPort: 1935}
+            - {name: hls, containerPort: 8888}
+            - {name: api, containerPort: 9997}
+            - {name: metrics, containerPort: 9998}
+          readinessProbe:
+            tcpSocket: {port: hls}
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: mediamtx-config}

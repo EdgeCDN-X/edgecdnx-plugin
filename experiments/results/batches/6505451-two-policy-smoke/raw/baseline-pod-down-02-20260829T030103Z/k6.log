@@ -1,0 +1,162 @@
+time="2026-08-29T03:01:04Z" level=warning msg="There were unknown fields in the options exported in the script" error="json: unknown field \"gracefulStop\""
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /scripts/hls.js
+        output: json (/results/k6-metrics.jsonl)
+
+     scenarios: (100.00%) 1 scenario, 5 max VUs, 48s max duration (incl. graceful stop):
+              * default: Up to 5 looping VUs for 18s over 5 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+running (01.0s), 1/5 VUs, 0 complete and 0 interrupted iterations
+default   [   6% ] 1/5 VUs  01.0s/18.0s
+
+running (02.0s), 1/5 VUs, 0 complete and 0 interrupted iterations
+default   [  11% ] 1/5 VUs  02.0s/18.0s
+
+running (03.0s), 2/5 VUs, 4 complete and 0 interrupted iterations
+default   [  17% ] 2/5 VUs  03.0s/18.0s
+
+running (04.0s), 2/5 VUs, 14 complete and 0 interrupted iterations
+default   [  22% ] 2/5 VUs  04.0s/18.0s
+time="2026-08-29T03:01:09Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:09Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (05.0s), 2/5 VUs, 22 complete and 0 interrupted iterations
+default   [  28% ] 2/5 VUs  05.0s/18.0s
+
+running (06.0s), 2/5 VUs, 22 complete and 0 interrupted iterations
+default   [  33% ] 2/5 VUs  06.0s/18.0s
+
+running (07.0s), 2/5 VUs, 22 complete and 0 interrupted iterations
+default   [  39% ] 2/5 VUs  07.0s/18.0s
+
+running (08.0s), 2/5 VUs, 22 complete and 0 interrupted iterations
+default   [  44% ] 2/5 VUs  08.0s/18.0s
+time="2026-08-29T03:01:13Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:13Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (09.0s), 3/5 VUs, 23 complete and 0 interrupted iterations
+default   [  50% ] 3/5 VUs  09.0s/18.0s
+time="2026-08-29T03:01:13Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:13Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:14Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:14Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:14Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+time="2026-08-29T03:01:14Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:14Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+running (10.0s), 4/5 VUs, 31 complete and 0 interrupted iterations
+default   [  56% ] 4/5 VUs  10.0s/18.0s
+time="2026-08-29T03:01:15Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (11.0s), 5/5 VUs, 31 complete and 0 interrupted iterations
+default   [  61% ] 5/5 VUs  11.0s/18.0s
+time="2026-08-29T03:01:16Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (12.0s), 5/5 VUs, 32 complete and 0 interrupted iterations
+default   [  67% ] 5/5 VUs  12.0s/18.0s
+
+running (13.0s), 5/5 VUs, 33 complete and 0 interrupted iterations
+default   [  72% ] 5/5 VUs  13.0s/18.0s
+time="2026-08-29T03:01:17Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (14.0s), 5/5 VUs, 34 complete and 0 interrupted iterations
+default   [  78% ] 5/5 VUs  14.0s/18.0s
+time="2026-08-29T03:01:18Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:01:19Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+time="2026-08-29T03:01:19Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (15.0s), 5/5 VUs, 37 complete and 0 interrupted iterations
+default   [  83% ] 5/5 VUs  15.0s/18.0s
+time="2026-08-29T03:01:20Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (16.0s), 5/5 VUs, 37 complete and 0 interrupted iterations
+default   [  89% ] 5/5 VUs  16.0s/18.0s
+time="2026-08-29T03:01:20Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+running (17.0s), 5/5 VUs, 39 complete and 0 interrupted iterations
+default   [  94% ] 5/5 VUs  17.0s/18.0s
+time="2026-08-29T03:01:21Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+time="2026-08-29T03:01:21Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (18.0s), 4/5 VUs, 41 complete and 0 interrupted iterations
+default   [ 100% ] 4/5 VUs  18.0s/18.0s
+time="2026-08-29T03:01:22Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+running (19.0s), 3/5 VUs, 42 complete and 0 interrupted iterations
+default ↓ [ 100% ] 4/5 VUs  18s
+time="2026-08-29T03:01:23Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+running (20.0s), 2/5 VUs, 43 complete and 0 interrupted iterations
+default ↓ [ 100% ] 4/5 VUs  18s
+
+running (21.0s), 2/5 VUs, 43 complete and 0 interrupted iterations
+default ↓ [ 100% ] 4/5 VUs  18s
+time="2026-08-29T03:01:25Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+running (22.0s), 1/5 VUs, 44 complete and 0 interrupted iterations
+default ↓ [ 100% ] 4/5 VUs  18s
+time="2026-08-29T03:01:27Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-pod-down-02-20260829T030103Z\": request timeout"
+
+
+  █ THRESHOLDS 
+
+    hls_playlist_failures
+    ✓ 'count>=0' count=25
+
+    hls_segment_failures
+    ✓ 'count>=0' count=0
+
+    hls_session_failures
+    ✓ 'rate>=0' rate=55.55%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 85     3.76979/s
+    checks_succeeded...: 70.58% 60 out of 85
+    checks_failed......: 29.41% 25 out of 85
+
+    ✗ master playlist is 200
+      ↳  44% — ✓ 20 / ✗ 25
+    ✓ media playlist is 200
+    ✓ segment is 200
+
+    CUSTOM
+    hls_playlist_failures..........: 25     1.108762/s
+    hls_playlist_requests..........: 65     2.88278/s
+    hls_segment_duration...........: avg=2.46ms  min=968.85µs med=1.55ms   max=10.58ms p(90)=3.45ms p(95)=8.87ms p(99)=10.24ms 
+    hls_segment_failures...........: 0      0/s
+    hls_segment_requests...........: 20     0.887009/s
+    hls_session_failures...........: 55.55% 25 out of 45
+    selected_edge_node.............: 85     3.76979/s
+
+    HTTP
+    http_req_duration..............: avg=33.29ms min=0s       med=364.9µs  max=2.31s   p(90)=2.92ms p(95)=3.6ms  p(99)=754.36ms
+      { expected_response:true }...: avg=46.72ms min=166.21µs med=899.44µs max=2.31s   p(90)=3.23ms p(95)=8.52ms p(99)=1.2s    
+    http_req_failed................: 28.73% 25 out of 87
+    http_reqs......................: 87     3.858491/s
+
+    EXECUTION
+    iteration_duration.............: avg=1.54s   min=200.79ms med=206.94ms max=5.2s    p(90)=5.2s   p(95)=5.2s   p(99)=5.2s    
+    iterations.....................: 45     1.995771/s
+    vus............................: 1      min=1        max=5
+    vus_max........................: 5      min=5        max=5
+
+    NETWORK
+    data_received..................: 23 MB  1.0 MB/s
+    data_sent......................: 13 kB  559 B/s
+
+
+
+
+running (22.5s), 0/5 VUs, 45 complete and 0 interrupted iterations
+default ✓ [ 100% ] 0/5 VUs  18s

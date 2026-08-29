@@ -1,0 +1,2 @@
+ARG K6_IMAGE=grafana/k6:1.8.0
+FROM ${K6_IMAGE}

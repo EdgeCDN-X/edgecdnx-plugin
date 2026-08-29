@@ -1,0 +1,17 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 30053
+        hostPort: 1053
+        protocol: UDP
+  - role: worker
+    labels:
+      edge-role: sydney
+  - role: worker
+    labels:
+      edge-role: singapore

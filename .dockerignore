@@ -1,0 +1,9 @@
+.git
+.tools
+.tmp
+coredns-*
+coredns.tar.gz
+experiments/results
+bin
+__pycache__
+*.pyc

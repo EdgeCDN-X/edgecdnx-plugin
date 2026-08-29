@@ -1,0 +1,62 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: sydney
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  fallbackLocations: [singapore]
+  geoLookup:
+    weight: 50
+    attributes:
+      geoip/continent/code:
+        weight: 1000
+        values:
+          - value: OC
+  nodeGroups:
+    - name: hls
+      flavor: nginx
+      nodes:
+        - name: edge-syd-a
+          ipv4: 10.96.10.11
+        - name: edge-syd-b
+          ipv4: 10.96.10.12
+      nodeSelector:
+        edge-role: sydney
+      cacheConfig:
+        name: hls
+        path: /var/cache/nginx
+        keysZone: 32m
+        inactive: 10m
+        maxSize: 256m
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: singapore
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  geoLookup:
+    weight: 50
+    attributes:
+      geoip/continent/code:
+        weight: 1000
+        values:
+          - value: AS
+  nodeGroups:
+    - name: hls
+      flavor: nginx
+      nodes:
+        - name: edge-sin-a
+          ipv4: 10.96.10.13
+      nodeSelector:
+        edge-role: singapore
+      cacheConfig:
+        name: hls
+        path: /var/cache/nginx
+        keysZone: 32m
+        inactive: 10m
+        maxSize: 256m

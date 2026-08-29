@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/edgeroute-mvp]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: true
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l $(find . -name '*.go'))"
+          test -z "$files" || { echo "gofmt required:"; echo "$files"; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test ./...
+      - name: Race tests
+        run: go test -race ./...
+      - name: Routing fuzz smoke
+        run: |
+          go test ./internal/routing -run='^$' -fuzz='^FuzzBuildRoutingKeyStable$' -fuzztime=5s
+          go test ./internal/routing -run='^$' -fuzz='^FuzzWeightedRendezvousNeverSelectsInvalidCandidate$' -fuzztime=5s
+      - name: Parse Kubernetes manifests offline
+        run: go test ./internal/manifesttest -run TestRepositoryYAMLManifestsParse
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: true
+      - name: Build patched CoreDNS
+        run: make build
+      - name: Build runtime images
+        run: make image

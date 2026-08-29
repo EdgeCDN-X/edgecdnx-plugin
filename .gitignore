@@ -1,2 +1,12 @@
 coredns.tar.gz
 coredns-*
+/coredns
+.tools/
+.tmp/
+bin/
+results/
+__pycache__/
+*.pyc
+!experiments/results/
+!experiments/results/**
+/experiments/results/quarantine/

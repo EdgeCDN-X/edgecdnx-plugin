@@ -1,13 +1,9 @@
 diff --git a/core/dnsserver/zdirectives.go b/core/dnsserver/zdirectives.go
-index f6496280e..386316771 100644
+index f6496280e..693f01d31 100644
 --- a/core/dnsserver/zdirectives.go
 +++ b/core/dnsserver/zdirectives.go
-@@ -69,4 +69,5 @@ var Directives = []string{
- 	"sign",
- 	"view",
- 	"nomad",
+@@ -63,0 +64 @@ var Directives = []string{
 +	"edgecdnx",
- }
 diff --git a/core/plugin/zplugin.go b/core/plugin/zplugin.go
 index 476d8c1dc..5f2fc9328 100644
 --- a/core/plugin/zplugin.go
@@ -49,8 +45,5 @@ index 0d735cef2..7ec0c61f9 100644
  quic:quic
  grpc_server:grpc_server
  https:https
-@@ -77,3 +78,4 @@ on:github.com/coredns/caddy/onevent
- sign:sign
- view:view
- nomad:nomad
+@@ -71,0 +73 @@ loop:loop
 +edgecdnx:github.com/EdgeCDN-X/edgecdnx-plugin

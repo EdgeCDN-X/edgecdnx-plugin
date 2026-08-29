@@ -1,242 +1,170 @@
-# EdgeCDN-X CoreDNS Plugin
+# EdgeRoute
 
-`edgecdnx` is a CoreDNS plugin that routes DNS queries to EdgeCDN-X locations using Kubernetes CRDs and request metadata.
+EdgeRoute extends the EdgeCDN-X CoreDNS routing plugin with telemetry-driven node scoring, bounded outlier ejection, weighted rendezvous selection, and gradual cache-node recovery.
 
-It supports:
-- Dynamic service-based routing for `A` and `AAAA` queries
-- Configurable dynamic answers as `A`/`AAAA` or `CNAME`
-- Alternate response mode for gRPC-originated requests detected from incoming context metadata
-- Direct node resolution for hostnames in the form `node.location.node.service`
-- Prefix-list routing (IP/CIDR to location)
-- Geo metadata lookup fallback when no prefix match is found
-- Hash-based node selection with health-aware filtering, spanning child locations
-- Parent location fallback, followed by configured fallback locations, when a primary location has no healthy node
-- Authoritative zone responses for configured Zone CRDs (SOA/NS and related behavior)
+The repository is an **extension of [EdgeCDN-X/edgecdnx-plugin](https://github.com/EdgeCDN-X/edgecdnx-plugin)**, not a from-scratch CDN. It composes mature infrastructure—CoreDNS, Kubernetes, Prometheus, NGINX, MediaMTX, Toxiproxy, and k6—and adds the quality-control and routing logic needed to connect them safely.
 
-## How It Works
+```mermaid
+flowchart LR
+    K6[k6 HLS clients] -->|DNS + HTTP| DNS[CoreDNS + EdgeCDN-X]
+    DNS -->|immutable NodeQuality snapshot| WR[Weighted Rendezvous]
+    WR --> A[edge-syd-a / NGINX]
+    WR --> B[edge-syd-b / NGINX]
+    WR --> C[edge-sin-a / NGINX]
+    A & B & C -->|Toxiproxy| O[MediaMTX HLS origin]
+    A & B & C --> P[Prometheus]
+    P --> QC[NodeQuality Controller]
+    QC -->|status + bounded weight| K8S[(Kubernetes API)]
+    K8S -->|dynamic informer| DNS
+```
 
-For each DNS query:
+The logical Sydney/Singapore topology runs on one three-node kind cluster. Prometheus is never queried in the DNS request path: the controller writes `NodeQuality.status`, and CoreDNS serves from an atomically published immutable snapshot.
 
-1. If query type is `A` or `AAAA`:
-- First check for a direct node request matching `nodename.location.node.service.`.
-  - Validate that the referenced `Service` exists.
-  - Load the referenced `Location`.
-  - Find the named node inside the location's node group for the service cache.
-  - Return an authoritative `A` or `AAAA` answer pointing at that node.
-- Try to map `qname` to a `Service` CRD (`spec.domain` or `spec.hostAliases[].name`).
-- Determine a location:
-  - First from prefix routing (`PrefixList` CRDs using source IP or EDNS client subnet).
-  - If prefix is missing or cache type is not available there, use geo lookup.
-- If the location has active Prometheus alerts (`status.alerts` is non-empty), skip it and try fallback locations instead.
-- Build the candidate node pool for the chosen location:
-  - Include all nodes in the matching cache node group that are not in maintenance mode.
-  - Also include nodes from **child locations** (locations whose `spec.parent` equals the chosen location), provided the child location itself is not in maintenance mode and has no active alerts.
-  - Use deterministic hash on query name to select a node.
-  - Enforce IPv4/IPv6 health condition based on query type.
-  - Skip nodes with active Prometheus alerts (`status.nodeStatus[node].alerts` is non-empty); try next node in hash order.
-- If no healthy node is found in the candidate pool:
-  - If the chosen location has a `spec.parent`, try that parent location next (same hash/filter logic).
-  - If the parent also has no healthy node, continue with the parent's `spec.fallbackLocations`.
-  - Otherwise (no parent), iterate the chosen location's `spec.fallbackLocations` directly.
-  - Choose response mode:
-    - Use `DNSResponseType` by default.
-    - If gRPC incoming metadata is present in request context, use `GRPCResponseType` instead.
-  - Return either:
-    - `A` or `AAAA` with the selected node IP when response type is `A_AAAA`
-    - `CNAME` to `node_name.location.node.original-request.` when response type is `CNAME`
+## What this fork adds
 
-2. Otherwise (or if no matching Service):
-- Fall back to zone-authoritative behavior backed by `Zone` CRDs.
-- Return:
-  - `NXDOMAIN` (+ SOA in authority section) if name does not exist
-  - `NODATA` style response (empty answer + SOA in authority) if name exists but no RR of requested type
-  - Normal answer when matching records exist
+- A namespaced `NodeQuality` CRD with schema, status subresource, observed state, versioned effective weight, and recovery metadata.
+- A Go quality controller that combines configurable PromQL signals with EWMA smoothing, sample gates, consecutive-failure/error-rate ejection, per-location ejection limits, stale/last-known-good behavior, persistent cooldown, and staged recovery.
+- Three explicit routing modes for controlled experiments:
+  - `deterministic`: upstream modulo-hash selection with existing active-health and geographic fallback;
+  - `static-rendezvous`: equal-weight rendezvous with the same health/fallback behavior and no NodeQuality input;
+  - `adaptive`: NodeQuality-weighted rendezvous with ejection and recovery.
+- An allocation-free DNS selection path using `/24` IPv4 and `/56` IPv6/ECS routing keys, `xxhash/v2`, dynamic informers, and `atomic.Pointer` snapshots.
+- Bounded-cardinality CoreDNS/controller metrics for routing, fallback, unavailability, reconcile outcomes, and snapshot age.
+- A reproducible HLS lab with one MediaMTX origin, three independent NGINX caches, Prometheus exporters, Toxiproxy fault injection, and k6 traffic.
+- Strict experiment identity checks that bind every result to one Git commit, image ID, Job UID, Pod, run ID, profile, host, and non-empty Prometheus response.
 
-3. If this plugin cannot answer, request is passed to the next plugin in chain.
+Upstream geographic routing, EdgeCDN-X CRDs, CoreDNS, NGINX caching, streaming, monitoring, fault injection, and load generation remain upstream or third-party capabilities. See [UPSTREAM.md](UPSTREAM.md) and [NOTICE.md](NOTICE.md) for the boundary.
 
-## Dependencies and Inputs
+## Five-minute Quick Start
 
-This plugin watches EdgeCDN-X CRDs via Kubernetes dynamic informers:
-- `services`
-- `locations`
-- `prefixlists`
-- `zones`
+Prerequisites: Docker, Go 1.25, GNU Make, PowerShell 7 (`pwsh`), `kubectl`, kind 0.33, and Helm 3.21. The commands use the pinned versions and image digests in `versions.env` and the Makefile.
 
-A working Kubernetes client configuration is required (`controller-runtime` `GetConfigOrDie()`), typically from in-cluster config or kubeconfig in the environment.
+For a new machine, create the local cluster and install the pinned mature dependencies:
 
-## Corefile Configuration
+```bash
+make kind-up
+make install-crds
+make monitoring
+make load-images
+make deploy stream-start
+```
 
-Syntax:
+Then run the core demonstration:
 
-```txt
-edgecdnx [ZONES...] {
-  namespace <k8s-namespace>
-  soa <primary-nameserver-label>
-  ns <ns-hostname> <ipv4>
-  ns <ns-hostname> <ipv4>
-  recordttl <seconds>
-  dnsresponsetype <CNAME|A_AAAA>
-  grpcresponsetype <CNAME|A_AAAA>
+```bash
+make smoke-test
+make e2e
+```
+
+`make smoke-test` proves that all three caches serve a real playlist and the same completed segment transitions `MISS -> HIT`. `make e2e` runs one isolated adaptive latency-fault test, verifies k6 identity and failure rate, requires non-empty Prometheus telemetry, restores adaptive mode, and writes temporary evidence under `.tmp/`.
+
+`make deploy` uses server-side apply with `--force-conflicts` only for fields declared under `deploy/`. This deliberately returns the lab to the committed Corefile and image after an experiment runner has temporarily patched those same fields.
+
+With tool images already cached, the two core demo commands complete in about five minutes on the recorded workstation. First bootstrap is slower because it downloads CoreDNS source, container images, and the pinned kube-prometheus-stack chart. `make quick-start` runs the entire new-cluster sequence; it is intentionally not idempotent because `kind-up` must fail if the requested cluster already exists.
+
+Run the scripted presentation instead:
+
+```powershell
+pwsh -NoProfile -File scripts/demo.ps1
+```
+
+## Recorded fault experiment
+
+The published smoke matrix contains 36 runs: 3 policies × 4 faults × 3 repetitions. All 36 have unique Job UIDs and Pods, matching directory/metadata/k6 run IDs, k6 exit code 0, P99 data, and 6–12 Prometheus series. Reprocessing the raw files twice produced identical SHA-256 hashes for every derived artifact.
+
+![Three-policy smoke comparison](experiments/results/processed/policy-comparison.png)
+
+Selected recorded results from [the generated report](experiments/results/processed/report.md):
+
+| Fault | Deterministic session failures | Static rendezvous | Adaptive |
+|---|---:|---:|---:|
+| disconnect | 56.18% | 0.00% | 0.00% |
+| pod down | 55.52% | 0.00% | 0.00% |
+| cold cache | 2.05% | 0.00% | 0.00% |
+| added latency | 0.00% | 0.00% | 0.18% |
+
+These are low-concurrency `smoke` observations (2–5 VUs for 18 seconds), not production SLO or throughput claims. In this sample, adaptive segment P95 was worse than static rendezvous for added latency and cold cache; the repository preserves that negative result instead of claiming universal performance improvement.
+
+Reproduce the complete smoke matrix and derived report:
+
+```powershell
+pwsh -NoProfile -File experiments/run-day6.ps1 -Profile smoke -Repetitions 3
+python -m pip install -r experiments/requirements.txt
+python experiments/process_results.py
+```
+
+## Algorithm and safety model
+
+The controller uses standard mechanisms rather than reimplementing infrastructure or hash primitives:
+
+- EWMA smooths observed latency/error signals; the repository defines the signals, sample gates, thresholds, and state transitions.
+- Outlier ejection follows the safety shape used by Envoy-style passive health handling: consecutive failures and error rate can eject, while a per-location maximum prevents all local nodes being removed together.
+- Weighted Rendezvous uses the exponential-rank formulation `-ln(u) / weight` and the maintained [`cespare/xxhash`](https://github.com/cespare/xxhash) implementation.
+- Recovery publishes bounded 10%/25%/50%/100% capacity steps so a cold cache is not returned to full traffic immediately.
+- Controller or Prometheus failure keeps DNS independent: request goroutines use last-known-good snapshot data, then bounded stale behavior and geographic fallback.
+
+Exact formulas, candidate filtering order, routing-key privacy, references, and measured benchmarks are in [docs/algorithm.md](docs/algorithm.md). The full component and failure boundaries are in [docs/architecture.md](docs/architecture.md) and [docs/failure-analysis.md](docs/failure-analysis.md).
+
+The exact verification record for the current release is in [docs/verification.md](docs/verification.md). The project release tag is `edgeroute-v0.1.0`; the inherited upstream `v0.1.0` tag is intentionally preserved.
+
+## Tests and common commands
+
+```bash
+make fmt-check
+make lint
+make test
+make test-race
+make fuzz FUZZ_TIME=30s
+make benchmark
+make smoke-test
+make e2e
+```
+
+The unit suite covers EWMA and score boundaries, stale/hard-stale behavior, ejection safety, cooldown/recovery transitions, Prometheus parsing, weighted distribution, minimal disruption, invalid weights, static fail-open, Ejected exclusion, immutable snapshots, and concurrent reads. The e2e target uses the real local HLS/monitoring/control path; it is not a substitute for a multi-region or production load test.
+
+Other useful targets:
+
+```bash
+make image
+make experiment-baseline EXPERIMENT_REPETITIONS=3
+make experiment-adaptive EXPERIMENT_REPETITIONS=3
+make collect-results
+make kind-down
+```
+
+## Lab defaults
+
+The committed controller flags are experimental configuration, not production recommendations: Prometheus timeout 3 s, reconcile interval 5 s, metric stale after 30 s, hard stale after 5 min, latency/error EWMA alpha 0.2/0.3, five consecutive errors, 10% error-rate threshold with at least 50 requests, 50% maximum ejection per location, and recovery steps at 30/60/120 seconds. Every PromQL expression is configurable and must contain `$NODE`; no metric name is embedded in the state engine.
+
+Corefile routing syntax:
+
+```text
+edgecdnx . {
+  namespace edge-system
+  soa ns1
+  recordttl 30
+  defaultweight 100
+  routingmode adaptive
+  dnsresponsetype A_AAAA
+  grpcresponsetype CNAME
 }
 ```
 
-Directives:
+`routingmode` accepts `adaptive`, `static-rendezvous`, or `deterministic`.
 
-| Directive | Required | Default | Description |
-| --- | --- | --- | --- |
-| `namespace` | Yes | none | Kubernetes namespace to watch for EdgeCDN-X CRDs. |
-| `soa` | Yes | none | SOA MNAME label prefix used when crafting SOA records (`<soa>.<zone>`). |
-| `ns` | Recommended (repeatable) | empty | Adds NS and NS A records for each served zone. Format: `ns <hostname> <ipv4>`. |
-| `recordttl` | No | `60` | TTL (seconds) used for generated `A`/`AAAA` node answers. |
-| `dnsresponsetype` | No | `A_AAAA` | Allowed values: `CNAME`, `A_AAAA`. Used for normal DNS-originated dynamic responses. |
-| `grpcresponsetype` | No | `CNAME` | Allowed values: `CNAME`, `A_AAAA`. Parsed and stored in plugin state. |
+## Limitations
 
-Notes:
-- `dnsresponsetype` and `grpcresponsetype` are validated and set in plugin configuration.
-- Normal dynamic service routing uses `dnsresponsetype`.
-- If gRPC metadata is present in the incoming request context, dynamic service routing uses `grpcresponsetype` instead.
-- `CNAME` responses use the target format `node_name.location.node.original-request.`.
-- Direct node requests matching `nodename.location.node.service.` always return `A` or `AAAA` from the resolved node IP.
-- Values are case-insensitive in Corefile input (converted to uppercase before validation).
+- Sydney and Singapore are logical labels on one workstation, not real intercontinental networks.
+- DNS cannot see an HLS path, video ID, playlist, or segment; the key is client subnet + DNS name + query type.
+- The recorded experiment is a smoke profile on an Intel i5-12400F and is not a high-concurrency result. The `full` 20→100 VU profile remains unrecorded.
+- Three repetitions expose spread but are insufficient for production SLO inference.
+- The lab has no real user/player QoE, commercial CDN topology, BGP/Anycast, persistent cache volumes, or multi-cluster control plane.
+- Static thresholds and weights require calibration for a real network; stale nodes can remain eligible only with bounded last-known-good weight.
+- The Quality Controller is single-leader and NodeQuality status is stored in one Kubernetes cluster; cross-cluster consistency is not implemented.
+- No AI/ML component is claimed in `v0.1.0`.
 
-Example:
+## Upstream and license status
 
-```txt
-.:53 {
-  errors
-  health
-  ready
+The fork baseline is EdgeCDN-X `edgecdnx-plugin` commit `1dd32f2f970831b880d5015f63adb74433d767d3`. EdgeCDN-X deployment references are pinned by commit in [UPSTREAM.md](UPSTREAM.md); third-party runtime versions and digests are pinned in `versions.env`.
 
-  edgecdnx . {
-    namespace edgecdnx
-    soa ns1
-    ns ns1.edge.example.com. 203.0.113.10
-    ns ns2.edge.example.com. 203.0.113.11
-    recordttl 60
-    dnsresponsetype A_AAAA
-    grpcresponsetype CNAME
-  }
-
-  prometheus :9153
-  forward . 1.1.1.1 8.8.8.8
-  cache 30
-  reload
-}
-```
-
-## Build and Patch Workflow
-
-This repository builds a patched CoreDNS that includes `edgecdnx` in the directive list and plugin registry.
-
-### Local Build
-
-```bash
-make build
-```
-
-What this does:
-- Downloads CoreDNS source tarball for configured version
-- Extracts source
-- Applies patch from `patches/<version>/coredns.patch`
-- Updates CoreDNS version string with `-edgecdnx-<gitsha|dev>` suffix
-- Builds CoreDNS binary in `coredns-<version>/coredns`
-
-Useful targets:
-
-```bash
-make download
-make extract
-make patch
-make clean
-```
-
-### Container Image
-
-The provided Dockerfile expects a built `coredns` binary in repository root:
-
-```bash
-cp coredns-1.14.1/coredns ./coredns
-docker build -t edgecdnx-coredns:local .
-```
-
-Runtime details:
-- Runs as non-root (distroless base)
-- Grants `cap_net_bind_service` to bind DNS port 53
-- Exposes `53/tcp` and `53/udp`
-
-## Readiness and Operational Notes
-
-- Plugin readiness is tied to informer sync for Zone, Service, and PrefixList watchers.
-- If informers have not synced yet, CoreDNS `ready` integration will report not ready for this plugin.
-- Logging uses CoreDNS plugin logger under `edgecdnx*` prefixes.
-
-## Error Behavior
-
-- Invalid Corefile directive arguments return plugin startup errors.
-- Invalid `dnsresponsetype`/`grpcresponsetype` values are rejected at startup.
-- Direct node requests fall through to the next plugin if the referenced service, location, or node cannot be resolved.
-- On routing failures (service not found, geolookup failure, no healthy nodes), plugin falls through to next handler where applicable.
-
-## Metrics
-
-A Prometheus counter vector is defined:
-- `coredns_edgecdnx_request_count_total{server="..."}`
-
-At present, the counter is declared but not incremented in request handling code.
-
-## Troubleshooting
-
-### Plugin does not appear in CoreDNS
-
-- Ensure patch was applied (`patches/1.14.1/coredns.patch`).
-- Confirm rebuilt binary is used at runtime.
-- Verify `edgecdnx` appears in patched CoreDNS plugin list.
-
-### Startup panic or config errors
-
-- Validate required directives are set with arguments:
-  - `namespace`
-  - `soa`
-- Check each `ns` line has exactly 2 arguments.
-- Check `recordttl` is an integer.
-- Check response type values are one of `CNAME`, `A_AAAA`.
-
-### Unexpected fallback to next plugin
-
-- Verify Service CRD domain/host alias exactly matches queried FQDN.
-- Verify Location has node group matching Service cache.
-- Verify health conditions for selected `A`/`AAAA` path.
-- Verify PrefixList destination location exists.
-- Check `status.alerts` on the Location — any active Prometheus alert causes the location to be skipped and fallback locations to be tried.
-- Check `status.nodeStatus[node].alerts` on each node — any active Prometheus alert on a node removes it from the candidate pool for that request.
-
-### Direct node hostname does not resolve
-
-- Query name must match `nodename.location.node.service.` exactly.
-- The `service` suffix must resolve to an existing Service CRD domain or host alias.
-- The referenced location must exist.
-- The referenced node must exist inside the location node group matching the service cache.
-
-### Unexpected CNAME instead of A or AAAA
-
-- Check `dnsresponsetype` in Corefile for normal DNS-originated requests.
-- Check `grpcresponsetype` for requests that carry gRPC incoming metadata in context.
-
-## Development
-
-Minimum toolchain:
-- Go `1.25.x`
-- `make`
-- `patch`
-- `curl`
-- Docker (optional, for image build)
-
-Basic checks:
-
-```bash
-go test ./...
-```
-
-## License
-
-See project-level licensing in this repository or organization policy.
+The pinned upstream plugin did not contain a standalone `LICENSE` file and deferred licensing to project/organization policy. This repository therefore does not invent or relabel an upstream license; [NOTICE.md](NOTICE.md) records provenance and third-party boundaries.

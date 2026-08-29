@@ -1,0 +1,24 @@
+{
+  "run_id": "static-rendezvous-pod-down-03-20260829T034119Z",
+  "git_commit": "8794f2bc354abdc6c54521a37f9d099ac375e371",
+  "variant": "static-rendezvous",
+  "scenario": "pod-down",
+  "repetition": 3,
+  "profile": "smoke",
+  "random_seed": 20260831,
+  "job_uid": "51db8d8c-88c4-4e96-998c-a8548f6b0ecd",
+  "k6_pod": "edgeroute-k6-7lzhr",
+  "k6_exit_code": 0,
+  "start_timestamp": "2026-08-29T03:41:19.9549980Z",
+  "end_timestamp": "2026-08-29T03:42:47.0228989Z",
+  "container_tags": {
+    "k6_upstream": "grafana/k6:1.8.0",
+    "k6_runtime": "edgeroute-k6:1.8.0",
+    "coredns": "edgeroute-coredns:static-rendezvous-8794f2b",
+    "coredns_id": "sha256:67702937d3c2610d224b5af5a8dc44d366c3ec817e589f58b8ac9bb073c013fb"
+  },
+  "cluster_config": "deploy/kind/cluster.yaml; 3 kind nodes; logical Sydney/Singapore regions",
+  "algorithm_config": "equal-weight rendezvous + active health + fallback; NodeQuality controller disabled",
+  "injection_delay_seconds": 4,
+  "host_hardware": "12th Gen Intel(R) Core(TM) i5-12400F"
+}

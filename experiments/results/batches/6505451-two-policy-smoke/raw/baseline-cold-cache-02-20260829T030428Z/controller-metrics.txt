@@ -1,0 +1,2 @@
+# unavailable for this variant
+# Error from server (ServiceUnavailable): no endpoints available for service "quality-controller"

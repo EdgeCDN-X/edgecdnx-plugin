@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: edgeroute-k6
+  namespace: edge-system
+  labels:
+    app.kubernetes.io/name: edgeroute-k6
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: edgeroute-k6
+        app.kubernetes.io/part-of: edgeroute
+    spec:
+      restartPolicy: Never
+      dnsPolicy: None
+      dnsConfig:
+        # Replaced by run-day6.ps1 with the current Service ClusterIP.
+        nameservers: [__EDGEROUTE_DNS_SERVICE_IP__]
+        options:
+          - {name: ndots, value: "1"}
+      containers:
+        - name: k6
+          image: edgeroute-k6:1.8.0
+          imagePullPolicy: Never
+          command: [sh, -c]
+          args:
+            - |-
+              set +e
+              k6 run --summary-export=/results/k6-summary.json --out=json=/results/k6-metrics.jsonl /scripts/hls.js
+              code=$?
+              echo "$code" > /results/exit-code
+              touch /results/complete
+              sleep 600
+          envFrom:
+            - configMapRef: {name: edgeroute-k6-run}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: script, mountPath: /scripts, readOnly: true}
+            - {name: results, mountPath: /results}
+            - {name: tmp, mountPath: /tmp}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      volumes:
+        - name: script
+          configMap: {name: edgeroute-k6-script}
+        - {name: results, emptyDir: {sizeLimit: 512Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}

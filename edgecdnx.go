@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	"github.com/EdgeCDN-X/edgecdnx-plugin/internal/routing"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/request"
@@ -30,6 +31,7 @@ type EdgeCDNX struct {
 	ServiceManager           *ServiceManager
 	PrefixListRoutingManager *PrefixListRoutingManager
 	LocationManager          *LocationManager
+	NodeQualityManager       *NodeQualityManager
 	DNSResponseType          ResponseType
 	GRPCResponseType         ResponseType
 }
@@ -58,18 +60,6 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Authoritative = true
-
-	srcIP := net.ParseIP(state.IP())
-	if o := state.Req.IsEdns0(); o != nil {
-		for _, s := range o.Option {
-			if e, ok := s.(*dns.EDNS0_SUBNET); ok {
-				srcIP = e.Address
-				break
-			}
-		}
-	}
-
-	log.Debug(fmt.Sprintf("edgecdnx: Request Source IP %s", srcIP))
 
 	if responseType == CNAME {
 		res := new(dns.CNAME)
@@ -107,13 +97,14 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 }
 
 func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	requestCount.WithLabelValues(e.Name()).Inc()
 	state := request.Request{W: w, Req: r}
 	qname := state.Name()
 	responseType := e.DNSResponseType
 
 	md, ok := grpcmetadata.FromIncomingContext(ctx)
 	if ok {
-		log.Debug(fmt.Sprintf("edgecdnx: gRPC metadata: %v", md))
+		_ = md
 		responseType = e.GRPCResponseType
 	}
 
@@ -142,6 +133,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
+			routingTotal.WithLabelValues(location.Name, node.Name, "direct").Inc()
 			return e.BuildNodeReponse(node, location.Name, A_AAAA, w, r)
 		}
 
@@ -172,8 +164,9 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				Cache: service.Spec.Cache,
 				Qtype: state.Req.Question[0].Qtype,
 			}
+			hashInput := routing.BuildRoutingKey(requestClientIP(state), state.Name(), state.Req.Question[0].Qtype)
 
-			node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
+			node, err := e.LocationManager.ApplyHash(&location, hashInput, filter)
 			if err != nil {
 				log.Debug(fmt.Sprintf("edgecdnxgeolookup: Hashing error - %v", err))
 
@@ -186,7 +179,8 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 					}
 
-					node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
+					fallbackTotal.WithLabelValues(location.Name, parentLocation.Name, "no_candidate").Inc()
+					node, err := e.LocationManager.ApplyHash(&parentLocation, hashInput, filter)
 					if err == nil {
 						log.Debug(fmt.Sprintf("edgecdnxgeolookup: Fallback to location %s successful", node.LocationName))
 						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, w, r)
@@ -204,7 +198,8 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 						log.Error(fmt.Sprintf("edgecdnxgeolookup: Fallback location %s not found", fbLoc))
 						continue
 					}
-					node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
+					fallbackTotal.WithLabelValues(location.Name, fallBackLocation.Name, "no_candidate").Inc()
+					node, err := e.LocationManager.ApplyHash(&fallBackLocation, hashInput, filter)
 					if err == nil {
 						log.Debug(fmt.Sprintf("edgecdnxgeolookup: Fallback to location %s successful", node.LocationName))
 						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, w, r)
@@ -269,6 +264,18 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 // Name implements the Handler interface.
 func (e EdgeCDNX) Name() string { return "edgecdnx" }
+
+func requestClientIP(state request.Request) net.IP {
+	clientIP := net.ParseIP(state.IP())
+	if option := state.Req.IsEdns0(); option != nil {
+		for _, subnetOption := range option.Option {
+			if subnet, ok := subnetOption.(*dns.EDNS0_SUBNET); ok {
+				return subnet.Address
+			}
+		}
+	}
+	return clientIP
+}
 
 // ResponsePrinter wrap a dns.ResponseWriter and will write example to standard output when WriteMsg is called.
 type ResponsePrinter struct {

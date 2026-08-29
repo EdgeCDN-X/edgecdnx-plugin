@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namePrefix: edge-syd-a-
+resources: [../../base]
+configMapGenerator:
+  - name: edge-config
+    behavior: merge
+    files: [toxiproxy.json]
+labels:
+  - pairs: {edgeroute.io/node: edge-syd-a, edgeroute.io/location: sydney, edgeroute.io/service: hls-demo}
+    includeSelectors: true
+  - pairs: {node: edge-syd-a, location: sydney, service: hls-demo}
+patches:
+  - target: {kind: Deployment, name: edge}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {edge-role: sydney}
+  - target: {kind: Service, name: edge}
+    patch: |-
+      - op: add
+        path: /spec/clusterIP
+        value: 10.96.10.11

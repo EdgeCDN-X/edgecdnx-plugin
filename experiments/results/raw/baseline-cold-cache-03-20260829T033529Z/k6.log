@@ -1,0 +1,130 @@
+time="2026-08-29T03:35:30Z" level=warning msg="There were unknown fields in the options exported in the script" error="json: unknown field \"gracefulStop\""
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /scripts/hls.js
+        output: json (/results/k6-metrics.jsonl)
+
+     scenarios: (100.00%) 1 scenario, 5 max VUs, 48s max duration (incl. graceful stop):
+              * default: Up to 5 looping VUs for 18s over 5 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+
+
+running (01.0s), 1/5 VUs, 4 complete and 0 interrupted iterations
+default   [   6% ] 1/5 VUs  01.0s/18.0s
+
+running (02.0s), 1/5 VUs, 9 complete and 0 interrupted iterations
+default   [  11% ] 1/5 VUs  02.0s/18.0s
+
+running (03.0s), 2/5 VUs, 18 complete and 0 interrupted iterations
+default   [  17% ] 2/5 VUs  03.0s/18.0s
+
+running (04.0s), 2/5 VUs, 28 complete and 0 interrupted iterations
+default   [  22% ] 2/5 VUs  04.0s/18.0s
+time="2026-08-29T03:35:35Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-cold-cache-03-20260829T033529Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:35:35Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-cold-cache-03-20260829T033529Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+time="2026-08-29T03:35:35Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-cold-cache-03-20260829T033529Z\": dial tcp 10.96.10.11:8080: connect: connection refused"
+
+running (05.0s), 2/5 VUs, 37 complete and 0 interrupted iterations
+default   [  28% ] 2/5 VUs  05.0s/18.0s
+
+running (06.0s), 2/5 VUs, 37 complete and 0 interrupted iterations
+default   [  33% ] 2/5 VUs  06.0s/18.0s
+
+running (07.0s), 2/5 VUs, 37 complete and 0 interrupted iterations
+default   [  39% ] 2/5 VUs  07.0s/18.0s
+
+running (08.0s), 2/5 VUs, 37 complete and 0 interrupted iterations
+default   [  44% ] 2/5 VUs  08.0s/18.0s
+
+running (09.0s), 3/5 VUs, 38 complete and 0 interrupted iterations
+default   [  50% ] 3/5 VUs  09.0s/18.0s
+time="2026-08-29T03:35:40Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-cold-cache-03-20260829T033529Z\": request timeout"
+time="2026-08-29T03:35:40Z" level=warning msg="Request Failed" error="Get \"http://video.edgeroute.test:8080/live/demo/index.m3u8?run=baseline-cold-cache-03-20260829T033529Z\": request timeout"
+
+running (10.0s), 4/5 VUs, 47 complete and 0 interrupted iterations
+default   [  56% ] 4/5 VUs  10.0s/18.0s
+
+running (11.0s), 5/5 VUs, 70 complete and 0 interrupted iterations
+default   [  61% ] 5/5 VUs  11.0s/18.0s
+
+running (12.0s), 5/5 VUs, 93 complete and 0 interrupted iterations
+default   [  67% ] 5/5 VUs  12.0s/18.0s
+
+running (13.0s), 5/5 VUs, 114 complete and 0 interrupted iterations
+default   [  72% ] 5/5 VUs  13.0s/18.0s
+
+running (14.0s), 5/5 VUs, 139 complete and 0 interrupted iterations
+default   [  78% ] 5/5 VUs  14.0s/18.0s
+
+running (15.0s), 5/5 VUs, 161 complete and 0 interrupted iterations
+default   [  83% ] 5/5 VUs  15.0s/18.0s
+
+running (16.0s), 5/5 VUs, 183 complete and 0 interrupted iterations
+default   [  89% ] 5/5 VUs  16.0s/18.0s
+
+running (17.0s), 4/5 VUs, 207 complete and 0 interrupted iterations
+default   [  94% ] 4/5 VUs  17.0s/18.0s
+
+running (18.0s), 3/5 VUs, 225 complete and 0 interrupted iterations
+default   [ 100% ] 3/5 VUs  18.0s/18.0s
+
+
+  █ THRESHOLDS 
+
+    hls_playlist_failures
+    ✓ 'count>=0' count=5
+
+    hls_segment_failures
+    ✓ 'count>=0' count=0
+
+    hls_session_failures
+    ✓ 'rate>=0' rate=2.19%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 674    37.222163/s
+    checks_succeeded...: 99.25% 669 out of 674
+    checks_failed......: 0.74%  5 out of 674
+
+    ✗ master playlist is 200
+      ↳  97% — ✓ 223 / ✗ 5
+    ✓ media playlist is 200
+    ✓ segment is 200
+
+    CUSTOM
+    hls_playlist_failures..........: 5      0.276129/s
+    hls_playlist_requests..........: 451    24.906818/s
+    hls_segment_duration...........: avg=8.63ms   min=663.07µs med=1.37ms   max=506.33ms p(90)=3.61ms   p(95)=5.31ms   p(99)=392.77ms
+    hls_segment_failures...........: 0      0/s
+    hls_segment_requests...........: 223    12.315345/s
+    hls_session_failures...........: 2.19%  5 out of 228
+    selected_edge_node.............: 674    37.222163/s
+
+    HTTP
+    http_req_duration..............: avg=3.37ms   min=0s       med=768.42µs max=506.33ms p(90)=2.73ms   p(95)=3.96ms   p(99)=7.46ms  
+      { expected_response:true }...: avg=3.39ms   min=124.99µs med=774.83µs max=506.33ms p(90)=2.74ms   p(95)=3.97ms   p(99)=7.46ms  
+    http_req_failed................: 0.72%  5 out of 686
+    http_reqs......................: 686    37.884872/s
+
+    EXECUTION
+    iteration_duration.............: avg=256.87ms min=200.73ms med=204.78ms max=5.2s     p(90)=211.66ms p(95)=217.06ms p(99)=732.54ms
+    iterations.....................: 228    12.591474/s
+    vus............................: 3      min=1        max=5
+    vus_max........................: 5      min=5        max=5
+
+    NETWORK
+    data_received..................: 256 MB 14 MB/s
+    data_sent......................: 139 kB 7.7 kB/s
+
+
+
+
+running (18.1s), 0/5 VUs, 228 complete and 0 interrupted iterations
+default ✓ [ 100% ] 0/5 VUs  18s

@@ -1,0 +1,1 @@
+{"unavailable":true,"reason":"kubectl exec -n edge-data deployment/edge-syd-a-edge -c nginx -- wget -qO- http://127.0.0.1:8474/proxies failed:\nerror: timed out waiting for the condition"}

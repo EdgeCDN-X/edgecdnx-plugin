@@ -1,0 +1,24 @@
+{
+  "run_id": "adaptive-disconnect-02-20260829T034602Z",
+  "git_commit": "8794f2bc354abdc6c54521a37f9d099ac375e371",
+  "variant": "adaptive",
+  "scenario": "disconnect",
+  "repetition": 2,
+  "profile": "smoke",
+  "random_seed": 20260830,
+  "job_uid": "00e6dd8f-7896-437f-9ff7-5ace6ba1e46a",
+  "k6_pod": "edgeroute-k6-r47c5",
+  "k6_exit_code": 0,
+  "start_timestamp": "2026-08-29T03:46:02.7222984Z",
+  "end_timestamp": "2026-08-29T03:46:28.5430087Z",
+  "container_tags": {
+    "k6_upstream": "grafana/k6:1.8.0",
+    "k6_runtime": "edgeroute-k6:1.8.0",
+    "coredns": "edgeroute-coredns:adaptive-8794f2b",
+    "coredns_id": "sha256:67702937d3c2610d224b5af5a8dc44d366c3ec817e589f58b8ac9bb073c013fb"
+  },
+  "cluster_config": "deploy/kind/cluster.yaml; 3 kind nodes; logical Sydney/Singapore regions",
+  "algorithm_config": "EWMA + ejection + weighted rendezvous + recovery ramp",
+  "injection_delay_seconds": 4,
+  "host_hardware": "12th Gen Intel(R) Core(TM) i5-12400F"
+}

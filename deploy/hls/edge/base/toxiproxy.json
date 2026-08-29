@@ -1,0 +1,8 @@
+[
+  {
+    "name": "origin",
+    "listen": "0.0.0.0:8666",
+    "upstream": "mediamtx.edge-data.svc.cluster.local:8888",
+    "enabled": true
+  }
+]

@@ -1,0 +1,45 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: edge-caches
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  namespaceSelector:
+    matchNames: [edge-data]
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: cache
+      app.kubernetes.io/part-of: edgeroute
+  targetLabels: [node, location, service]
+  endpoints:
+    - port: nginx-metrics
+      path: /metrics
+      interval: 5s
+    - port: toxiproxy-api
+      path: /metrics
+      interval: 5s
+    - port: log-metrics
+      path: /metrics
+      interval: 5s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mediamtx
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: edgeroute
+spec:
+  namespaceSelector:
+    matchNames: [edge-data]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mediamtx
+      app.kubernetes.io/part-of: edgeroute
+  targetLabels: [node, location, service]
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s

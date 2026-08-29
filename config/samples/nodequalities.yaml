@@ -1,0 +1,14 @@
+apiVersion: adaptive.edgecdnx.io/v1alpha1
+kind: NodeQuality
+metadata: {name: edge-syd-a, namespace: edge-system}
+spec: {nodeName: edge-syd-a, location: sydney, staticCapacity: 100, enabled: true}
+---
+apiVersion: adaptive.edgecdnx.io/v1alpha1
+kind: NodeQuality
+metadata: {name: edge-syd-b, namespace: edge-system}
+spec: {nodeName: edge-syd-b, location: sydney, staticCapacity: 100, enabled: true}
+---
+apiVersion: adaptive.edgecdnx.io/v1alpha1
+kind: NodeQuality
+metadata: {name: edge-sin-a, namespace: edge-system}
+spec: {nodeName: edge-sin-a, location: singapore, staticCapacity: 100, enabled: true}

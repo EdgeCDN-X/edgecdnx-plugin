@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"slices"
 	"sync"
+	"time"
 
+	"github.com/EdgeCDN-X/edgecdnx-plugin/internal/routing"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
@@ -21,9 +24,17 @@ import (
 )
 
 type LocationManagerConfiguration struct {
-	Namespace string
-	RecrodTTL uint32
+	Namespace           string
+	RecrodTTL           uint32
+	StaticDefaultWeight int32
+	RoutingMode         string
 }
+
+const (
+	RoutingModeAdaptive         = "adaptive"
+	RoutingModeDeterministic    = "deterministic"
+	RoutingModeStaticRendezvous = "static-rendezvous"
+)
 
 type LocationManager struct {
 	fac       dynamicinformer.DynamicSharedInformerFactory
@@ -31,6 +42,7 @@ type LocationManager struct {
 	Sync      *sync.RWMutex
 	Locations map[string]infrastructurev1alpha1.Location
 	Config    LocationManagerConfiguration
+	Quality   *NodeQualityManager
 }
 
 type HashFilters struct {
@@ -57,6 +69,8 @@ func (l LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.
 }
 
 func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, hashInput string, filters HashFilters) (FilteredNodeWithMeta, error) {
+	started := time.Now()
+	defer func() { selectionDuration.Observe(time.Since(started).Seconds()) }()
 	filteredNodes := make([]FilteredNodeWithMeta, 0)
 
 	if location.Spec.MaintenanceMode {
@@ -167,56 +181,125 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 
 	log.Debugf("edgecdnxgeolookup: Found %d nodes in location %s matching cache %s", len(filteredNodes), location.Name, filters.Cache)
 
-	for {
-		if len(filteredNodes) == 0 {
-			return FilteredNodeWithMeta{}, fmt.Errorf("No healthy nodes found in location %s with cache %s", location.Name, filters.Cache)
-		}
+	if l.Config.RoutingMode == RoutingModeDeterministic {
+		return l.selectDeterministicBaseline(location.Name, hashInput, filters, filteredNodes)
+	}
 
-		hash := md5.Sum([]byte(hashInput))
-		lastFourBytes := hash[len(hash)-4:]
-		hashValue := uint32(lastFourBytes[0])<<24 | uint32(lastFourBytes[1])<<16 | uint32(lastFourBytes[2])<<8 | uint32(lastFourBytes[3])
-		nodeIndex := int(hashValue % uint32(len(filteredNodes)))
-		node := filteredNodes[nodeIndex]
-
-		if node.NodeStatus.Conditions == nil || len(node.NodeStatus.Conditions) == 0 {
-			log.Debugf("edgecdnxgeolookup: Node %s in location %s has no status, assuming healthy", node.Node.Name, node.LocationName)
-			return node, nil
-		}
-
-		if idx := slices.IndexFunc(node.NodeStatus.Conditions, func(c infrastructurev1alpha1.NodeCondition) bool {
-			switch filters.Qtype {
-			case dns.TypeA:
-				return c.Type == infrastructurev1alpha1.IPV4HealthCheckSuccessful
-			case dns.TypeAAAA:
-				return c.Type == infrastructurev1alpha1.IPV6HealthCheckSuccessful
-			default:
-				return false
+	snapshot := routing.EmptySnapshot()
+	if l.Config.RoutingMode == RoutingModeAdaptive && l.Quality != nil {
+		snapshot = l.Quality.Snapshot()
+		if !snapshot.UpdatedAt.IsZero() {
+			age := time.Since(snapshot.UpdatedAt).Seconds()
+			if age < 0 {
+				age = 0
 			}
-		}); idx != -1 {
-			condition := node.NodeStatus.Conditions[idx]
-			if !condition.Status {
-				log.Debugf("edgecdnxgeolookup: Node %s is not healthy for qtype %d, trying next node", node.Node.Name, filters.Qtype)
-				filteredNodes = slices.Delete(filteredNodes, nodeIndex, nodeIndex+1)
-				continue
-			}
-		} else {
-			log.Debugf("edgecdnxgeolookup: Node %s has no health check condition for qtype %d, assuming healthy", node.Node.Name, filters.Qtype)
+			snapshotAge.Set(age)
 		}
-
-		if node.NodeStatus.Alerts != nil && len(node.NodeStatus.Alerts) > 0 {
-			log.Debugf("edgecdnxgeolookup: Node %s has active alerts, trying next node. %v", node.Node.Name, func() []string {
-				alertNames := make([]string, 0, len(node.NodeStatus.Alerts))
-				for _, alert := range node.NodeStatus.Alerts {
-					alertNames = append(alertNames, alert.AlertName)
-				}
-				return alertNames
-			}())
-			filteredNodes = slices.Delete(filteredNodes, nodeIndex, nodeIndex+1)
+	}
+	eligible := make(map[string]FilteredNodeWithMeta, len(filteredNodes))
+	candidates := make([]routing.Candidate, 0, len(filteredNodes))
+	for _, node := range filteredNodes {
+		if !supportsQueryType(node.Node, filters.Qtype) {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "address_family").Inc()
 			continue
 		}
-
-		return filteredNodes[nodeIndex], nil
+		if !nodeHealthyForQuery(node.NodeStatus, filters.Qtype) {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "active_health").Inc()
+			continue
+		}
+		if len(node.NodeStatus.Alerts) > 0 {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "prometheus_alert").Inc()
+			continue
+		}
+		weight := l.Config.StaticDefaultWeight
+		if l.Config.RoutingMode == RoutingModeAdaptive {
+			if quality, found := snapshot.Lookup(node.LocationName, node.Node.Name); found {
+				if quality.State == "Disabled" || quality.State == "Ejected" {
+					nodeUnavailableTotal.WithLabelValues(node.Node.Name, quality.State).Inc()
+					continue
+				}
+				weight = quality.EffectiveWeight
+				if weight <= 0 {
+					nodeUnavailableTotal.WithLabelValues(node.Node.Name, "zero_weight").Inc()
+					continue
+				}
+			}
+		}
+		id := node.LocationName + "\x00" + node.Node.Name
+		eligible[id] = node
+		candidates = append(candidates, routing.Candidate{ID: id, Weight: float64(weight)})
 	}
+	selectedID, ok := routing.SelectWeightedRendezvous(hashInput, candidates)
+	if !ok {
+		routingTotal.WithLabelValues(location.Name, "", "no_candidate").Inc()
+		return FilteredNodeWithMeta{}, fmt.Errorf("no healthy weighted nodes found in location %s with cache %s", location.Name, filters.Cache)
+	}
+	selected := eligible[selectedID]
+	result := "selected"
+	if l.Config.RoutingMode == RoutingModeStaticRendezvous {
+		result = "static_selected"
+	}
+	routingTotal.WithLabelValues(selected.LocationName, selected.Node.Name, result).Inc()
+	return selected, nil
+}
+
+// selectDeterministicBaseline preserves the upstream modulo-hash control path
+// for reproducible A/B experiments. It intentionally ignores NodeQuality while
+// retaining the upstream active-health and alert safety filters.
+func (l LocationManager) selectDeterministicBaseline(locationName, hashInput string, filters HashFilters, nodes []FilteredNodeWithMeta) (FilteredNodeWithMeta, error) {
+	eligible := make([]FilteredNodeWithMeta, 0, len(nodes))
+	for _, node := range nodes {
+		if !supportsQueryType(node.Node, filters.Qtype) {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "address_family").Inc()
+			continue
+		}
+		if !nodeHealthyForQuery(node.NodeStatus, filters.Qtype) {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "active_health").Inc()
+			continue
+		}
+		if len(node.NodeStatus.Alerts) > 0 {
+			nodeUnavailableTotal.WithLabelValues(node.Node.Name, "prometheus_alert").Inc()
+			continue
+		}
+		eligible = append(eligible, node)
+	}
+	if len(eligible) == 0 {
+		routingTotal.WithLabelValues(locationName, "", "no_candidate").Inc()
+		return FilteredNodeWithMeta{}, fmt.Errorf("no healthy nodes found in location %s with cache %s", locationName, filters.Cache)
+	}
+
+	// This is the upstream EdgeCDN-X baseline algorithm, not a security hash.
+	hash := md5.Sum([]byte(hashInput))
+	lastFourBytes := hash[len(hash)-4:]
+	hashValue := uint32(lastFourBytes[0])<<24 | uint32(lastFourBytes[1])<<16 | uint32(lastFourBytes[2])<<8 | uint32(lastFourBytes[3])
+	selected := eligible[int(hashValue%uint32(len(eligible)))]
+	routingTotal.WithLabelValues(selected.LocationName, selected.Node.Name, "baseline_selected").Inc()
+	return selected, nil
+}
+
+func supportsQueryType(node infrastructurev1alpha1.NodeSpec, queryType uint16) bool {
+	switch queryType {
+	case dns.TypeA:
+		return net.ParseIP(node.Ipv4).To4() != nil
+	case dns.TypeAAAA:
+		ip := net.ParseIP(node.Ipv6)
+		return ip != nil && ip.To4() == nil
+	default:
+		return false
+	}
+}
+
+func nodeHealthyForQuery(status infrastructurev1alpha1.NodeInstanceStatus, queryType uint16) bool {
+	if len(status.Conditions) == 0 {
+		return true
+	}
+	index := slices.IndexFunc(status.Conditions, func(condition infrastructurev1alpha1.NodeCondition) bool {
+		if queryType == dns.TypeA {
+			return condition.Type == infrastructurev1alpha1.IPV4HealthCheckSuccessful
+		}
+		return condition.Type == infrastructurev1alpha1.IPV6HealthCheckSuccessful
+	})
+	return index == -1 || status.Conditions[index].Status
 }
 
 func (l LocationManager) PerformGeoLookup(ctx context.Context, cache string) (string, error) {
@@ -313,12 +396,13 @@ func (l LocationManager) HasCacheType(cacheType string, location string) bool {
 	return false
 }
 
-func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, config LocationManagerConfiguration) *LocationManager {
+func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, config LocationManagerConfiguration, quality *NodeQualityManager) *LocationManager {
 	locationMgr := &LocationManager{
 		fac:       factory,
 		Sync:      &sync.RWMutex{},
 		Locations: make(map[string]infrastructurev1alpha1.Location),
 		Config:    config,
+		Quality:   quality,
 	}
 
 	// TODO populate caches based on location name

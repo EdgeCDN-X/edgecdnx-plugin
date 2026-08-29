@@ -1,0 +1,1 @@
+{"edge-syd-a-origin":{"name":"edge-syd-a-origin","listen":"[::]:8666","upstream":"mediamtx.edge-data.svc.cluster.local:8888","enabled":true,"Logger":{},"toxics":[]}}

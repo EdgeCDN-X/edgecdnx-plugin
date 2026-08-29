@@ -1,6 +1,7 @@
 package edgecdnxplugin
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	clientsetscheme "k8s.io/client-go/kubernetes/scheme"
@@ -63,6 +66,8 @@ func setup(c *caddy.Controller) error {
 	var namespace, soa string // Base Zone configuration
 	var ns []NSRecord = make([]NSRecord, 0)
 	var recordttl uint32 = 60
+	var staticDefaultWeight int32 = 100
+	var routingMode = RoutingModeAdaptive
 	var dnsResponseType ResponseType = A_AAAA
 	var grpcResponseType ResponseType = CNAME
 
@@ -88,6 +93,22 @@ func setup(c *caddy.Controller) error {
 				return plugin.Error("edgecdnx", fmt.Errorf("failed to parse recordttl: %w", err))
 			}
 			recordttl = uint32(raw)
+		}
+		if val == "defaultweight" {
+			if len(args) != 1 {
+				return plugin.Error("edgecdnx", fmt.Errorf("expected 1 argument for defaultweight, got %d", len(args)))
+			}
+			raw, err := strconv.Atoi(args[0])
+			if err != nil || raw < 1 || raw > 100 {
+				return plugin.Error("edgecdnx", fmt.Errorf("defaultweight must be an integer within [1,100]"))
+			}
+			staticDefaultWeight = int32(raw)
+		}
+		if val == "routingmode" {
+			if len(args) != 1 || (args[0] != RoutingModeAdaptive && args[0] != RoutingModeDeterministic && args[0] != RoutingModeStaticRendezvous) {
+				return plugin.Error("edgecdnx", fmt.Errorf("routingmode must be one of: %s, %s, %s", RoutingModeAdaptive, RoutingModeDeterministic, RoutingModeStaticRendezvous))
+			}
+			routingMode = args[0]
 		}
 		if val == "dnsresponsetype" {
 			if len(args) != 1 {
@@ -117,6 +138,17 @@ func setup(c *caddy.Controller) error {
 	}
 
 	fac := dynamicinformer.NewFilteredDynamicSharedInformerFactory(clientSet, 10*time.Minute, namespace, nil)
+	qualityEnabled := true
+	preflightContext, cancelPreflight := context.WithTimeout(context.Background(), 5*time.Second)
+	_, qualityErr := clientSet.Resource(nodeQualityGVR).Namespace(namespace).List(preflightContext, metav1.ListOptions{Limit: 1})
+	cancelPreflight()
+	if apierrors.IsNotFound(qualityErr) {
+		qualityEnabled = false
+		log.Warning("edgeroute: NodeQuality CRD is not installed; using static EdgeCDN-X routing (fail-open)")
+	} else if qualityErr != nil {
+		return plugin.Error("edgecdnx", fmt.Errorf("NodeQuality API preflight failed: %w", qualityErr))
+	}
+	nodeQualityManager := NewNodeQualityManager(fac, qualityEnabled)
 
 	zoneManager := NewZoneManager(fac, ZoneManagerConfiguration{
 		Namespace: namespace,
@@ -134,9 +166,11 @@ func setup(c *caddy.Controller) error {
 	})
 
 	locationManager := NewLocationManager(fac, LocationManagerConfiguration{
-		Namespace: namespace,
-		RecrodTTL: recordttl,
-	})
+		Namespace:           namespace,
+		RecrodTTL:           recordttl,
+		StaticDefaultWeight: staticDefaultWeight,
+		RoutingMode:         routingMode,
+	}, nodeQualityManager)
 
 	factoryCloseChan := make(chan struct{})
 	fac.Start(factoryCloseChan)
@@ -156,6 +190,7 @@ func setup(c *caddy.Controller) error {
 			ServiceManager:           serviceManager,
 			PrefixListRoutingManager: prefixListRoutingManager,
 			LocationManager:          locationManager,
+			NodeQualityManager:       nodeQualityManager,
 			DNSResponseType:          dnsResponseType,
 			GRPCResponseType:         grpcResponseType,
 		}
