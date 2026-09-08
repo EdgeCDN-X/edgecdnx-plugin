@@ -119,6 +119,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	// If requesting A or AAAA, we do the routing
 	if state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA {
+		// Check if the query matches the node location service pattern
 		if matches := nodeLocationServicePattern.FindStringSubmatch(qname); len(matches) == 4 {
 			nodeName := matches[1]
 			locationName := matches[2]
@@ -136,6 +137,12 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
+			// Ensure the location matches the service's route selector
+			if !matchesLabelSelector(location.Labels, service.Spec.RouteSelector) {
+				log.Debug(fmt.Sprintf("edgecdnx: location %s does not match route selector for service %s", location.Name, serviceName))
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+			}
+
 			node, err := findNodeInLocation(location, service.Spec.Cache, nodeName)
 			if err != nil {
 				log.Debug(fmt.Sprintf("edgecdnx: %v", err))
@@ -150,10 +157,16 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 		if err == nil {
 			//Cache type found
-			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state)
+			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state, service)
+			if prefixRouted {
+				location, locationErr := e.LocationManager.GetLocationByName(locationName)
+				if locationErr != nil || !matchesLabelSelector(location.Labels, service.Spec.RouteSelector) {
+					prefixRouted = false
+				}
+			}
 
 			if !prefixRouted || !e.LocationManager.HasCacheType(service.Spec.Cache, locationName) {
-				locationName, err = e.LocationManager.PerformGeoLookup(ctx, service.Spec.Cache)
+				locationName, err = e.LocationManager.PerformGeoLookup(ctx, service, service.Spec.Cache)
 				if err != nil {
 					log.Errorf("edgecdnx: GeoLookup failed: %v", err)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
@@ -169,8 +182,10 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			log.Debug(fmt.Sprintf("edgecdnxgeolookup: Routing to location: %s\n", location.Name))
 
 			filter := HashFilters{
-				Cache: service.Spec.Cache,
-				Qtype: state.Req.Question[0].Qtype,
+				Cache:         service.Spec.Cache,
+				Qtype:         state.Req.Question[0].Qtype,
+				RouteSelector: service.Spec.RouteSelector,
+				ServiceName:   service.Name,
 			}
 
 			node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
@@ -183,6 +198,10 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 					log.Debug(fmt.Sprintf("edgecdnxgeolookup: Falling back to parent location %s", location.Spec.Parent))
 					if err != nil {
 						log.Error(fmt.Sprintf("edgecdnxgeolookup: Fallback location %s not found", location.Spec.Parent))
+						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+					}
+					if !matchesLabelSelector(parentLocation.Labels, service.Spec.RouteSelector) {
+						log.Debugf("edgecdnxgeolookup: Parent location %s does not match routeSelector for service %s", parentLocation.Name, service.Name)
 						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 					}
 
@@ -202,6 +221,10 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 					log.Debug(fmt.Sprintf("edgecdnxgeolookup: Falling back to location %s", fbLoc))
 					if err != nil {
 						log.Error(fmt.Sprintf("edgecdnxgeolookup: Fallback location %s not found", fbLoc))
+						continue
+					}
+					if !matchesLabelSelector(fallBackLocation.Labels, service.Spec.RouteSelector) {
+						log.Debugf("edgecdnxgeolookup: Fallback location %s does not match routeSelector for service %s", fbLoc, service.Name)
 						continue
 					}
 					node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)

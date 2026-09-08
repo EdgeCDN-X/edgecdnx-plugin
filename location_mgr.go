@@ -10,7 +10,9 @@ import (
 	"slices"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 
@@ -34,14 +36,33 @@ type LocationManager struct {
 }
 
 type HashFilters struct {
-	Cache string
-	Qtype uint16
+	Cache         string
+	Qtype         uint16
+	RouteSelector *metav1.LabelSelector
+	ServiceName   string
 }
 
 type FilteredNodeWithMeta struct {
 	Node         infrastructurev1alpha1.NodeSpec
 	LocationName string
 	NodeStatus   infrastructurev1alpha1.NodeInstanceStatus
+}
+
+func matchesLabelSelector(objectLabels map[string]string, selector *metav1.LabelSelector) bool {
+	if selector == nil {
+		return true
+	}
+	if len(objectLabels) == 0 && len(selector.MatchLabels) == 0 && len(selector.MatchExpressions) == 0 {
+		return true
+	}
+
+	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		log.Warningf("edgecdnx: invalid LabelSelector %v: %v", selector, err)
+		return true
+	}
+
+	return labelSelector.Matches(labels.Set(objectLabels))
 }
 
 func (l LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.Location, error) {
@@ -120,6 +141,11 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 			err = json.Unmarshal(temp, childLocation)
 			if err != nil {
 				log.Errorf("edgecdnxgeolookup: failed to unmarshal child location object: %v", err)
+				continue
+			}
+
+			if !matchesLabelSelector(childLocation.Labels, filters.RouteSelector) {
+				log.Debugf("edgecdnxgeolookup: Child Location %s does not match routeSelector for service %s", childLocation.Name, filters.ServiceName)
 				continue
 			}
 
@@ -219,7 +245,7 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 	}
 }
 
-func (l LocationManager) PerformGeoLookup(ctx context.Context, cache string) (string, error) {
+func (l LocationManager) PerformGeoLookup(ctx context.Context, service infrastructurev1alpha1.Service, cache string) (string, error) {
 	maxValue := 0
 	locationScore := make(map[string]int)
 
@@ -227,6 +253,10 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, cache string) (st
 	defer l.Sync.RUnlock()
 
 	for locationName, location := range l.Locations {
+		if !matchesLabelSelector(location.Labels, service.Spec.RouteSelector) {
+			log.Debug(fmt.Sprintf("edgecdnxgeolookup: skipping location %s as it does not match routeSelector for service %s", locationName, service.Name))
+			continue
+		}
 		if slices.IndexFunc(location.Spec.NodeGroups, func(ng infrastructurev1alpha1.NodeGroupSpec) bool { return ng.Name == cache }) == -1 {
 			log.Debug(fmt.Sprintf("edgecdnxgeolookup: skipping location %s as it does not have node group for cache %s", locationName, cache))
 			continue

@@ -109,9 +109,11 @@ func NewServiceManager(factory dynamicinformer.DynamicSharedInformerFactory, con
 			for i, service := range sm.Services {
 				if service.Name == newService.Name {
 					sm.Services[i] = *newService
-					break
+					log.Infof("edgecdnx: Updated Service %s", newService.Name)
+					return
 				}
 			}
+			sm.Services = append(sm.Services, *newService)
 			log.Infof("edgecdnx: Updated Service %s", newService.Name)
 		},
 		DeleteFunc: func(obj any) {

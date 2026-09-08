@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
@@ -23,9 +25,14 @@ type PrefixListRoutingManagerConfiguration struct {
 }
 
 type PrefixListRoutingManager struct {
-	fac       dynamicinformer.DynamicSharedInformerFactory
-	Informer  cache.SharedIndexInformer
-	Sync      *sync.RWMutex
+	fac           dynamicinformer.DynamicSharedInformerFactory
+	Informer      cache.SharedIndexInformer
+	Sync          *sync.RWMutex
+	RoutingTables map[string]*PrefixRoutingTable
+}
+
+type PrefixRoutingTable struct {
+	Labels    map[string]string
 	RoutingV4 *avltree.Tree
 	RoutingV6 *avltree.Tree
 }
@@ -35,8 +42,110 @@ type PrefixTreeEntry struct {
 	Prefix   net.IPNet
 }
 
-func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request) (bool, string) {
+func prefixListLabelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, labels[key]))
+	}
+
+	return strings.Join(parts, ",")
+}
+
+func newPrefixRoutingTable(labels map[string]string) *PrefixRoutingTable {
+	return &PrefixRoutingTable{
+		Labels:    labels,
+		RoutingV4: avltree.New(compareV4PrefixTreeEntries, 0),
+		RoutingV6: avltree.New(compareV6PrefixTreeEntries, 0),
+	}
+}
+
+func compareV4PrefixTreeEntries(a any, b any) int {
+	starta := a.(PrefixTreeEntry).Prefix.IP.To4()
+	enda := make(net.IP, len(starta))
+	copy(enda, starta)
+
+	for i := 0; i < len(a.(PrefixTreeEntry).Prefix.Mask); i++ {
+		enda[i] |= ^a.(PrefixTreeEntry).Prefix.Mask[i]
+	}
+
+	startb := b.(PrefixTreeEntry).Prefix.IP.To4()
+	endb := make(net.IP, len(startb))
+	copy(endb, startb)
+
+	for i := 0; i < len(b.(PrefixTreeEntry).Prefix.Mask); i++ {
+		endb[i] |= ^b.(PrefixTreeEntry).Prefix.Mask[i]
+	}
+
+	if bytes.Compare(enda, startb) == -1 {
+		return -1
+	}
+
+	if bytes.Compare(starta, endb) == 1 {
+		return 1
+	}
+
+	return 0
+}
+
+func compareV6PrefixTreeEntries(a any, b any) int {
+	starta := a.(PrefixTreeEntry).Prefix.IP.To16()
+	enda := make(net.IP, len(starta))
+	copy(enda, starta)
+	for i := 0; i < len(a.(PrefixTreeEntry).Prefix.Mask); i++ {
+		enda[i] |= ^a.(PrefixTreeEntry).Prefix.Mask[i]
+	}
+
+	startb := b.(PrefixTreeEntry).Prefix.IP.To16()
+	endb := make(net.IP, len(startb))
+	copy(endb, startb)
+	for i := 0; i < len(b.(PrefixTreeEntry).Prefix.Mask); i++ {
+		endb[i] |= ^b.(PrefixTreeEntry).Prefix.Mask[i]
+	}
+
+	if bytes.Compare(enda, startb) == -1 {
+		return -1
+	}
+
+	if bytes.Compare(starta, endb) == 1 {
+		return 1
+	}
+
+	return 0
+}
+
+func (p PrefixListRoutingManager) routingTableFor(labels map[string]string) *PrefixRoutingTable {
+	key := prefixListLabelKey(labels)
+	table, ok := p.RoutingTables[key]
+	if !ok {
+		table = newPrefixRoutingTable(labels)
+		p.RoutingTables[key] = table
+	}
+
+	return table
+}
+
+func (p PrefixListRoutingManager) removeRoutingTableIfEmpty(labels map[string]string) {
+	key := prefixListLabelKey(labels)
+	table, ok := p.RoutingTables[key]
+	if ok && table.RoutingV4.Len() == 0 && table.RoutingV6.Len() == 0 {
+		delete(p.RoutingTables, key)
+	}
+}
+
+func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, service infrastructurev1alpha1.Service) (bool, string) {
 	srcIP := net.ParseIP(state.IP())
+	var bestMatch PrefixTreeEntry
+	bestPrefixLength := -1
 
 	if o := state.Req.IsEdns0(); o != nil {
 		for _, s := range o.Option {
@@ -49,32 +158,59 @@ func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request) (bool, s
 	p.Sync.RLock()
 	defer p.Sync.RUnlock()
 
-	if srcIP.To4() != nil {
-		dest := p.RoutingV4.Find(PrefixTreeEntry{
-			Prefix: net.IPNet{
-				IP:   srcIP,
-				Mask: net.CIDRMask(32, 32),
-			},
-		})
+	routingTableKeys := make([]string, 0, len(p.RoutingTables))
+	for key := range p.RoutingTables {
+		routingTableKeys = append(routingTableKeys, key)
+	}
+	sort.Strings(routingTableKeys)
 
-		if dest != nil {
-			log.Debug(fmt.Sprintf("edgecdnx: Found V4 prefix %s", dest))
-			return true, dest.(PrefixTreeEntry).Location
+	for _, routingTableKey := range routingTableKeys {
+		routingTable := p.RoutingTables[routingTableKey]
+		if !matchesLabelSelector(routingTable.Labels, service.Spec.RouteSelector) {
+			log.Debugf("edgecdnx: Prefix routing table %s does not match routeSelector for service %s", routingTableKey, service.Name)
+			continue
+		}
+
+		if srcIP.To4() != nil {
+			dest := routingTable.RoutingV4.Find(PrefixTreeEntry{
+				Prefix: net.IPNet{
+					IP:   srcIP,
+					Mask: net.CIDRMask(32, 32),
+				},
+			})
+
+			if dest != nil {
+				entry := dest.(PrefixTreeEntry)
+				prefixLength, _ := entry.Prefix.Mask.Size()
+				if prefixLength > bestPrefixLength {
+					bestMatch = entry
+					bestPrefixLength = prefixLength
+				}
+			}
+		}
+
+		if srcIP.To16() != nil {
+			dest := routingTable.RoutingV6.Find(PrefixTreeEntry{
+				Prefix: net.IPNet{
+					IP:   srcIP,
+					Mask: net.CIDRMask(128, 128),
+				},
+			})
+
+			if dest != nil {
+				entry := dest.(PrefixTreeEntry)
+				prefixLength, _ := entry.Prefix.Mask.Size()
+				if prefixLength > bestPrefixLength {
+					bestMatch = entry
+					bestPrefixLength = prefixLength
+				}
+			}
 		}
 	}
 
-	if srcIP.To16() != nil {
-		dest := p.RoutingV6.Find(PrefixTreeEntry{
-			Prefix: net.IPNet{
-				IP:   srcIP,
-				Mask: net.CIDRMask(128, 128),
-			},
-		})
-
-		if dest != nil {
-			log.Debug(fmt.Sprintf("edgecdnx: Found V6 prefix %s", dest))
-			return true, dest.(PrefixTreeEntry).Location
-		}
+	if bestPrefixLength != -1 {
+		log.Debug(fmt.Sprintf("edgecdnx: Found prefix route %s", bestMatch.Prefix.String()))
+		return true, bestMatch.Location
 	}
 
 	return false, ""
@@ -82,60 +218,9 @@ func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request) (bool, s
 
 func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFactory, config PrefixListRoutingManagerConfiguration) *PrefixListRoutingManager {
 	prefixListMgr := &PrefixListRoutingManager{
-		fac:  factory,
-		Sync: &sync.RWMutex{},
-		RoutingV4: avltree.New(func(a any, b any) int {
-			starta := a.(PrefixTreeEntry).Prefix.IP.To4()
-			enda := make(net.IP, len(starta))
-			copy(enda, starta)
-
-			for i := 0; i < len(a.(PrefixTreeEntry).Prefix.Mask); i++ {
-				enda[i] |= ^a.(PrefixTreeEntry).Prefix.Mask[i]
-			}
-
-			startb := b.(PrefixTreeEntry).Prefix.IP.To4()
-			endb := make(net.IP, len(startb))
-			copy(endb, startb)
-
-			for i := 0; i < len(b.(PrefixTreeEntry).Prefix.Mask); i++ {
-				endb[i] |= ^b.(PrefixTreeEntry).Prefix.Mask[i]
-			}
-
-			if bytes.Compare(enda, startb) == -1 {
-				return -1
-			}
-
-			if bytes.Compare(starta, endb) == 1 {
-				return 1
-			}
-
-			return 0
-		}, 0),
-		RoutingV6: avltree.New(func(a any, b any) int {
-			starta := a.(PrefixTreeEntry).Prefix.IP.To16()
-			enda := make(net.IP, len(starta))
-			copy(enda, starta)
-			for i := 0; i < len(a.(PrefixTreeEntry).Prefix.Mask); i++ {
-				enda[i] |= ^a.(PrefixTreeEntry).Prefix.Mask[i]
-			}
-
-			startb := b.(PrefixTreeEntry).Prefix.IP.To16()
-			endb := make(net.IP, len(startb))
-			copy(endb, startb)
-			for i := 0; i < len(b.(PrefixTreeEntry).Prefix.Mask); i++ {
-				endb[i] |= ^b.(PrefixTreeEntry).Prefix.Mask[i]
-			}
-
-			if bytes.Compare(enda, startb) == -1 {
-				return -1
-			}
-
-			if bytes.Compare(starta, endb) == 1 {
-				return 1
-			}
-
-			return 0
-		}, 0),
+		fac:           factory,
+		Sync:          &sync.RWMutex{},
+		RoutingTables: make(map[string]*PrefixRoutingTable),
 	}
 
 	prefixListInformer := prefixListMgr.fac.ForResource(schema.GroupVersionResource{
@@ -164,6 +249,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 			}
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
+			routingTable := prefixListMgr.routingTableFor(prefixList.Labels)
 			for _, v := range prefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -171,7 +257,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Adding V4 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV4.Add(PrefixTreeEntry{
+				routingTable.RoutingV4.Add(PrefixTreeEntry{
 					Location: prefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -183,7 +269,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Adding V6 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV6.Add(PrefixTreeEntry{
+				routingTable.RoutingV6.Add(PrefixTreeEntry{
 					Location: prefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -227,6 +313,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
+			oldRoutingTable := prefixListMgr.routingTableFor(oldPrefixList.Labels)
 			for _, v := range oldPrefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -234,7 +321,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Removing V4 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV4.Remove(PrefixTreeEntry{
+				oldRoutingTable.RoutingV4.Remove(PrefixTreeEntry{
 					Location: oldPrefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -246,11 +333,14 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Removing V6 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV6.Remove(PrefixTreeEntry{
+				oldRoutingTable.RoutingV6.Remove(PrefixTreeEntry{
 					Location: oldPrefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
 			}
+			prefixListMgr.removeRoutingTableIfEmpty(oldPrefixList.Labels)
+
+			newRoutingTable := prefixListMgr.routingTableFor(newPrefixList.Labels)
 			for _, v := range newPrefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -258,7 +348,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Adding V4 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV4.Add(PrefixTreeEntry{
+				newRoutingTable.RoutingV4.Add(PrefixTreeEntry{
 					Location: newPrefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -270,7 +360,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Adding V6 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV6.Add(PrefixTreeEntry{
+				newRoutingTable.RoutingV6.Add(PrefixTreeEntry{
 					Location: newPrefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -297,6 +387,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
+			routingTable := prefixListMgr.routingTableFor(prefixList.Labels)
 			for _, v := range prefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -304,7 +395,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Removing V4 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV4.Remove(PrefixTreeEntry{
+				routingTable.RoutingV4.Remove(PrefixTreeEntry{
 					Location: prefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
@@ -316,11 +407,12 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					return
 				}
 				log.Debug(fmt.Sprintf("Removing V6 CIDR %s/%d\n", v.Address, v.Size))
-				prefixListMgr.RoutingV6.Remove(PrefixTreeEntry{
+				routingTable.RoutingV6.Remove(PrefixTreeEntry{
 					Location: prefixList.Spec.Destination,
 					Prefix:   *ipnet,
 				})
 			}
+			prefixListMgr.removeRoutingTableIfEmpty(prefixList.Labels)
 			log.Infof("edgecdnxprefixlist: Deleted PrefixList %s", prefixList.Name)
 		},
 	})
