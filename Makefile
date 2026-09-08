@@ -7,11 +7,14 @@ PATCH_FILE = patches/$(COREDNS_VERSION)/coredns.patch
 TARBALL = coredns.tar.gz
 BINARY = coredns
 
-.PHONY: all build download extract patch version clean
+.PHONY: all build test download extract patch version clean
 
 all: build
 
 build: $(COREDNS_DIR)/$(BINARY)
+
+test:
+	go test ./...
 
 $(COREDNS_DIR)/$(BINARY): $(COREDNS_DIR)/.patched
 	cd $(COREDNS_DIR) && go mod tidy && make

@@ -86,7 +86,6 @@ func TestApplyHashSkipsChildLocationsThatDoNotMatchRouteSelector(t *testing.T) {
 	manager := newTestLocationManager(t, childLocation)
 
 	_, err := manager.ApplyHash(&parentLocation, "example.com.", HashFilters{
-		Cache: "cache-a",
 		Qtype: 1,
 		RouteSelector: &metav1.LabelSelector{
 			MatchLabels: map[string]string{"tenant": "acme"},
@@ -104,7 +103,6 @@ func TestApplyHashIncludesChildLocationsWhenRouteSelectorIsNil(t *testing.T) {
 	manager := newTestLocationManager(t, childLocation)
 
 	node, err := manager.ApplyHash(&parentLocation, "example.com.", HashFilters{
-		Cache: "cache-a",
 		Qtype: 1,
 	})
 	if err != nil {
@@ -115,5 +113,54 @@ func TestApplyHashIncludesChildLocationsWhenRouteSelectorIsNil(t *testing.T) {
 	}
 	if node.Node.Name != "child-node" {
 		t.Fatalf("node.Node.Name = %q, want %q", node.Node.Name, "child-node")
+	}
+}
+
+func TestApplyHashMatchesNodeGroupLabelsInsteadOfName(t *testing.T) {
+	location := newTestLocation("location", nil, "", "node")
+	location.Spec.NodeGroups[0].Name = "legacy-cache-name"
+	location.Spec.NodeGroups[0].Labels = map[string]string{"cache": "cache-a"}
+
+	manager := newTestLocationManager(t)
+	node, err := manager.ApplyHash(&location, "example.com.", HashFilters{
+		Qtype: 1,
+		RouteSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"cache": "cache-a"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected node group labels to match: %v", err)
+	}
+	if node.Node.Name != "node" {
+		t.Fatalf("node.Name = %q, want %q", node.Node.Name, "node")
+	}
+}
+
+func TestMatchesNodeGroupLabelsAllowsLabelsOnlyOnNodeGroup(t *testing.T) {
+	location := newTestLocation("location", nil, "", "node")
+	location.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
+	manager := newTestLocationManager(t, location)
+	manager.Locations[location.Name] = location
+
+	if !manager.MatchesNodeGroupLabels("location", &metav1.LabelSelector{
+		MatchLabels: map[string]string{"tenant": "acme"},
+	}) {
+		t.Fatal("expected selector to match node group labels")
+	}
+}
+
+func TestMatchesNodeGroupLabelsCombinesLocationAndNodeGroupLabels(t *testing.T) {
+	location := newTestLocation("location", map[string]string{"tenant": "acme"}, "", "node")
+	location.Spec.NodeGroups[0].Labels = map[string]string{"cache": "cache-a"}
+	manager := newTestLocationManager(t, location)
+	manager.Locations[location.Name] = location
+
+	if !manager.MatchesNodeGroupLabels("location", &metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			"tenant": "acme",
+			"cache":  "cache-a",
+		},
+	}) {
+		t.Fatal("expected selector to match combined location and node group labels")
 	}
 }

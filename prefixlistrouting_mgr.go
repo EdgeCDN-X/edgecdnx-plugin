@@ -167,7 +167,6 @@ func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, service 
 	for _, routingTableKey := range routingTableKeys {
 		routingTable := p.RoutingTables[routingTableKey]
 		if !matchesLabelSelector(routingTable.Labels, service.Spec.RouteSelector) {
-			log.Debugf("edgecdnx: Prefix routing table %s does not match routeSelector for service %s", routingTableKey, service.Name)
 			continue
 		}
 
