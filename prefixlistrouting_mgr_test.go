@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,16 +86,11 @@ func TestIsPrefixRoutedSelectsMatchingRoutingTable(t *testing.T) {
 	addTestPrefixRoute(t, manager, map[string]string{"tenant": "acme"}, "10.0.0.0/8", "acme-location")
 	addTestPrefixRoute(t, manager, map[string]string{"tenant": "globex"}, "10.0.0.0/8", "globex-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-acme"},
-		Spec: infrastructurev1alpha1.ServiceSpec{
-			RouteSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"tenant": "acme"},
-			},
-		},
+	routeSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"tenant": "acme"},
 	}
 
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), routeSelector)
 	if !routed {
 		t.Fatal("expected request to be prefix routed")
 	}
@@ -110,11 +104,7 @@ func TestIsPrefixRoutedWithoutSelectorUsesMostSpecificPrefixAcrossAllTables(t *t
 	addTestPrefixRoute(t, manager, map[string]string{"tenant": "acme"}, "10.0.0.0/8", "broad-location")
 	addTestPrefixRoute(t, manager, map[string]string{"tenant": "globex"}, "10.1.0.0/16", "specific-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-without-selector"},
-	}
-
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), nil)
 	if !routed {
 		t.Fatal("expected request to be prefix routed")
 	}
@@ -127,11 +117,7 @@ func TestIsPrefixRoutedWithoutSelectorMatchesUnlabeledRoutingTable(t *testing.T)
 	manager := newTestPrefixListRoutingManager()
 	addTestPrefixRoute(t, manager, nil, "10.1.0.0/16", "unlabeled-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-without-selector"},
-	}
-
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), nil)
 	if !routed {
 		t.Fatal("expected request to be prefix routed")
 	}
@@ -147,16 +133,11 @@ func TestIsPrefixRoutedWithSelectorIgnoresUnlabeledRoutingTable(t *testing.T) {
 	manager := newTestPrefixListRoutingManager()
 	addTestPrefixRoute(t, manager, nil, "10.1.0.0/16", "unlabeled-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-acme"},
-		Spec: infrastructurev1alpha1.ServiceSpec{
-			RouteSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"tenant": "acme"},
-			},
-		},
+	routeSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"tenant": "acme"},
 	}
 
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), routeSelector)
 	if routed {
 		t.Fatalf("expected request not to be routed, got location %q", location)
 	}
@@ -166,16 +147,11 @@ func TestIsPrefixRoutedIgnoresNonMatchingRoutingTables(t *testing.T) {
 	manager := newTestPrefixListRoutingManager()
 	addTestPrefixRoute(t, manager, map[string]string{"tenant": "globex"}, "10.1.0.0/16", "globex-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-acme"},
-		Spec: infrastructurev1alpha1.ServiceSpec{
-			RouteSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"tenant": "acme"},
-			},
-		},
+	routeSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"tenant": "acme"},
 	}
 
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), routeSelector)
 	if routed {
 		t.Fatalf("expected request not to be routed, got location %q", location)
 	}
@@ -187,23 +163,18 @@ func TestIsPrefixRoutedWithMatchExpressionInMatchesMultipleRoutingTables(t *test
 	addTestPrefixRoute(t, manager, map[string]string{"env": "staging", "tenant": "acme"}, "10.1.0.0/16", "staging-location")
 	addTestPrefixRoute(t, manager, map[string]string{"env": "dev", "tenant": "acme"}, "10.1.2.0/24", "dev-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-acme"},
-		Spec: infrastructurev1alpha1.ServiceSpec{
-			RouteSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"tenant": "acme"},
-				MatchExpressions: []metav1.LabelSelectorRequirement{
-					{
-						Key:      "env",
-						Operator: metav1.LabelSelectorOpIn,
-						Values:   []string{"prod", "staging"},
-					},
-				},
+	routeSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"tenant": "acme"},
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      "env",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"prod", "staging"},
 			},
 		},
 	}
 
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), routeSelector)
 	if !routed {
 		t.Fatal("expected request to be prefix routed")
 	}
@@ -218,26 +189,21 @@ func TestIsPrefixRoutedWithMatchExpressionsExistsAndNotInMatchesMultipleRoutingT
 	addTestPrefixRoute(t, manager, map[string]string{"tier": "edge", "region": "us"}, "10.1.0.0/16", "us-location")
 	addTestPrefixRoute(t, manager, map[string]string{"tier": "edge", "region": "test"}, "10.1.2.0/24", "test-location")
 
-	service := infrastructurev1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-edge"},
-		Spec: infrastructurev1alpha1.ServiceSpec{
-			RouteSelector: &metav1.LabelSelector{
-				MatchExpressions: []metav1.LabelSelectorRequirement{
-					{
-						Key:      "tier",
-						Operator: metav1.LabelSelectorOpExists,
-					},
-					{
-						Key:      "region",
-						Operator: metav1.LabelSelectorOpNotIn,
-						Values:   []string{"test"},
-					},
-				},
+	routeSelector := &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      "tier",
+				Operator: metav1.LabelSelectorOpExists,
+			},
+			{
+				Key:      "region",
+				Operator: metav1.LabelSelectorOpNotIn,
+				Values:   []string{"test"},
 			},
 		},
 	}
 
-	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), service)
+	routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), routeSelector)
 	if !routed {
 		t.Fatal("expected request to be prefix routed")
 	}

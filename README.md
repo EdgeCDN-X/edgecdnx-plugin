@@ -3,7 +3,8 @@
 `edgecdnx` is a CoreDNS plugin that routes DNS queries to EdgeCDN-X locations using Kubernetes CRDs and request metadata.
 
 It supports:
-- Dynamic service-based routing for `A` and `AAAA` queries
+- Dynamic `DNSEndpoint` routing for `A` and `AAAA` queries
+- Direct answers from `Simple` DNSEndpoint targets
 - Configurable dynamic answers as `A`/`AAAA` or `CNAME`
 - Alternate response mode for gRPC-originated requests detected from incoming context metadata
 - Direct node resolution for hostnames in the form `node.location.node.service`
@@ -19,12 +20,13 @@ For each DNS query:
 
 1. If query type is `A` or `AAAA`:
 - First check for a direct node request matching `nodename.location.node.service.`.
-  - Validate that the referenced `Service` exists.
+  - Validate that the referenced `DNSEndpoint` exists.
   - Load the referenced `Location`.
-  - Find the named node inside the location's node group for the service cache.
+  - Find the named node inside a node group matching the endpoint's route selector.
   - Return an authoritative `A` or `AAAA` answer pointing at that node.
-- Try to map `qname` to a `Service` CRD (`spec.domain` or `spec.hostAliases[].name`).
-- Determine a location:
+- Try to map `qname` and query type to a `DNSEndpoint` CRD.
+- For a `Simple` endpoint, return `spec.targets` directly using `spec.recordType` and `spec.recordTTL`.
+- For a `Geolocation` endpoint, determine a location using `spec.routeSelector`:
   - First from prefix routing (`PrefixList` CRDs using source IP or EDNS client subnet).
   - If prefix is missing or cache type is not available there, use geo lookup.
 - If the location has active Prometheus alerts (`status.alerts` is non-empty), skip it and try fallback locations instead.
@@ -45,7 +47,7 @@ For each DNS query:
     - `A` or `AAAA` with the selected node IP when response type is `A_AAAA`
     - `CNAME` to `node_name.location.node.original-request.` when response type is `CNAME`
 
-2. Otherwise (or if no matching Service):
+2. Otherwise (or if no matching DNSEndpoint):
 - Fall back to zone-authoritative behavior backed by `Zone` CRDs.
 - Return:
   - `NXDOMAIN` (+ SOA in authority section) if name does not exist
@@ -57,7 +59,7 @@ For each DNS query:
 ## Dependencies and Inputs
 
 This plugin watches EdgeCDN-X CRDs via Kubernetes dynamic informers:
-- `services`
+- `dnsendpoints`
 - `locations`
 - `prefixlists`
 - `zones`
@@ -87,14 +89,14 @@ Directives:
 | `namespace` | Yes | none | Kubernetes namespace to watch for EdgeCDN-X CRDs. |
 | `soa` | Yes | none | SOA MNAME label prefix used when crafting SOA records (`<soa>.<zone>`). |
 | `ns` | Recommended (repeatable) | empty | Adds NS and NS A records for each served zone. Format: `ns <hostname> <ipv4>`. |
-| `recordttl` | No | `60` | TTL (seconds) used for generated `A`/`AAAA` node answers. |
+| `recordttl` | No | `60` | Fallback TTL for generated node answers when a DNSEndpoint does not specify one. |
 | `dnsresponsetype` | No | `A_AAAA` | Allowed values: `CNAME`, `A_AAAA`. Used for normal DNS-originated dynamic responses. |
 | `grpcresponsetype` | No | `CNAME` | Allowed values: `CNAME`, `A_AAAA`. Parsed and stored in plugin state. |
 
 Notes:
 - `dnsresponsetype` and `grpcresponsetype` are validated and set in plugin configuration.
-- Normal dynamic service routing uses `dnsresponsetype`.
-- If gRPC metadata is present in the incoming request context, dynamic service routing uses `grpcresponsetype` instead.
+- Normal dynamic geolocation routing uses `dnsresponsetype`.
+- If gRPC metadata is present in the incoming request context, dynamic geolocation routing uses `grpcresponsetype` instead.
 - `CNAME` responses use the target format `node_name.location.node.original-request.`.
 - Direct node requests matching `nodename.location.node.service.` always return `A` or `AAAA` from the resolved node IP.
 - Values are case-insensitive in Corefile input (converted to uppercase before validation).

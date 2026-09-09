@@ -90,7 +90,7 @@ func TestApplyHashSkipsChildLocationsThatDoNotMatchRouteSelector(t *testing.T) {
 		RouteSelector: &metav1.LabelSelector{
 			MatchLabels: map[string]string{"tenant": "acme"},
 		},
-		ServiceName: "service-acme",
+		EndpointName: "endpoint-acme",
 	})
 	if err == nil {
 		t.Fatal("expected no healthy nodes after non-matching child location was skipped")

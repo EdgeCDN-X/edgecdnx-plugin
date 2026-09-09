@@ -14,6 +14,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
@@ -142,7 +143,7 @@ func (p PrefixListRoutingManager) removeRoutingTableIfEmpty(labels map[string]st
 	}
 }
 
-func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, service infrastructurev1alpha1.Service) (bool, string) {
+func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, routeSelector *metav1.LabelSelector) (bool, string) {
 	srcIP := net.ParseIP(state.IP())
 	var bestMatch PrefixTreeEntry
 	bestPrefixLength := -1
@@ -166,7 +167,7 @@ func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, service 
 
 	for _, routingTableKey := range routingTableKeys {
 		routingTable := p.RoutingTables[routingTableKey]
-		if !matchesLabelSelector(routingTable.Labels, service.Spec.RouteSelector) {
+		if !matchesLabelSelector(routingTable.Labels, routeSelector) {
 			continue
 		}
 

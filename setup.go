@@ -125,7 +125,7 @@ func setup(c *caddy.Controller) error {
 		Origins:   origins,
 	})
 
-	serviceManager := NewServiceManager(fac, ServiceManagerConfiguration{
+	dnsEndpointManager := NewDNSEndpointManager(fac, DNSEndpointManagerConfiguration{
 		Namespace: namespace,
 	})
 
@@ -153,7 +153,7 @@ func setup(c *caddy.Controller) error {
 		return EdgeCDNX{
 			Next:                     next,
 			ZoneManager:              zoneManager,
-			ServiceManager:           serviceManager,
+			DNSEndpointManager:       dnsEndpointManager,
 			PrefixListRoutingManager: prefixListRoutingManager,
 			LocationManager:          locationManager,
 			DNSResponseType:          dnsResponseType,

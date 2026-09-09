@@ -39,7 +39,7 @@ type LocationManager struct {
 type HashFilters struct {
 	Qtype         uint16
 	RouteSelector *metav1.LabelSelector
-	ServiceName   string
+	EndpointName  string
 }
 
 type FilteredNodeWithMeta struct {
@@ -103,7 +103,7 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 		maps.Copy(fullLabels, ng.Labels)
 
 		if !matchesLabelSelector(fullLabels, filters.RouteSelector) {
-			log.Debugf("edgecdnx: Node group %s does not match routeSelector for service %s", ng.Name, filters.ServiceName)
+			log.Debugf("edgecdnx: Node group %s does not match routeSelector for DNSEndpoint %s", ng.Name, filters.EndpointName)
 			continue
 		}
 
@@ -251,7 +251,7 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 	}
 }
 
-func (l LocationManager) PerformGeoLookup(ctx context.Context, service infrastructurev1alpha1.Service) (string, error) {
+func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) (string, error) {
 	maxValue := 0
 	locationScore := make(map[string]int)
 
@@ -263,9 +263,9 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, service infrastru
 			fullLabels := make(map[string]string)
 			maps.Copy(fullLabels, location.Labels)
 			maps.Copy(fullLabels, ng.Labels)
-			return matchesLabelSelector(fullLabels, service.Spec.RouteSelector)
+			return matchesLabelSelector(fullLabels, routeSelector)
 		}) {
-			log.Debug(fmt.Sprintf("edgecdnx: skipping location %s as no node group matches routeSelector for service %s", locationName, service.Name))
+			log.Debugf("edgecdnx: skipping location %s as no node group matches routeSelector for DNSEndpoint %s", locationName, endpointName)
 			continue
 		}
 

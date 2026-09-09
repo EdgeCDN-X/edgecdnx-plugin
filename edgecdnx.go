@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net"
 	"regexp"
+	"strings"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/coredns/coredns/plugin"
@@ -16,7 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var nodeLocationServicePattern = regexp.MustCompile(`^([^.]+)\.([^.]+)\.node\.(.+)\.$`)
+var nodeLocationEndpointPattern = regexp.MustCompile(`^([^.]+)\.([^.]+)\.node\.(.+)\.$`)
 
 type ResponseType string
 
@@ -29,7 +30,7 @@ const (
 type EdgeCDNX struct {
 	Next                     plugin.Handler
 	ZoneManager              *ZoneManager
-	ServiceManager           *ServiceManager
+	DNSEndpointManager       *DNSEndpointManager
 	PrefixListRoutingManager *PrefixListRoutingManager
 	LocationManager          *LocationManager
 	DNSResponseType          ResponseType
@@ -57,7 +58,7 @@ func findNodeInLocation(location infrastructurev1alpha1.Location, nodeName strin
 	return infrastructurev1alpha1.NodeSpec{}, fmt.Errorf("node %s not found in location %s", nodeName, location.Name)
 }
 
-func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, responseType ResponseType, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, responseType ResponseType, ttl uint32, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
 	m := new(dns.Msg)
@@ -78,13 +79,13 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 
 	if responseType == CNAME {
 		res := new(dns.CNAME)
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: e.LocationManager.Config.RecrodTTL}
+		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}
 		res.Target = dns.Fqdn(fmt.Sprintf("%s.%s.node.%s", node.Name, locationName, state.Name()))
 		m.Answer = append(m.Answer, res)
 	} else {
 		if state.Req.Question[0].Qtype == dns.TypeA {
 			res := new(dns.A)
-			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: e.LocationManager.Config.RecrodTTL}
+			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
 			parsed := net.ParseIP(node.Ipv4)
 			res.A = parsed
 			m.Answer = append(m.Answer, res)
@@ -92,7 +93,7 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 
 		if state.Req.Question[0].Qtype == dns.TypeAAAA {
 			res := new(dns.AAAA)
-			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: e.LocationManager.Config.RecrodTTL}
+			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
 			parsed := net.ParseIP(node.Ipv6)
 			res.AAAA = parsed
 			m.Answer = append(m.Answer, res)
@@ -111,6 +112,30 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 	return dns.RcodeSuccess, nil
 }
 
+func (e EdgeCDNX) BuildSimpleResponse(dnsEndpoint infrastructurev1alpha1.DNSEndpoint, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	state := request.Request{W: w, Req: r}
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative = true
+
+	for _, target := range dnsEndpoint.Spec.Targets {
+		record, err := dns.NewRR(fmt.Sprintf("%s %d IN %s %s", state.Name(), dnsEndpoint.Spec.RecordTTL, dnsEndpoint.Spec.RecordType, target))
+		if err != nil {
+			log.Errorf("edgecdnx: invalid target %q for DNSEndpoint %s: %v", target, dnsEndpoint.Name, err)
+			return dns.RcodeServerFailure, err
+		}
+		m.Answer = append(m.Answer, record)
+	}
+
+	state.SizeAndDo(m)
+	m = state.Scrub(m)
+	if err := w.WriteMsg(m); err != nil {
+		return dns.RcodeServerFailure, err
+	}
+
+	return dns.RcodeSuccess, nil
+}
+
 func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 	qname := state.Name()
@@ -122,17 +147,25 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		responseType = e.GRPCResponseType
 	}
 
+	dnsEndpoint, dnsEndpointErr := e.DNSEndpointManager.GetDNSEndpoint(qname, state.QType())
+	if dnsEndpointErr == nil && strings.EqualFold(dnsEndpoint.Spec.RoutingPolicy, "Simple") {
+		return e.BuildSimpleResponse(dnsEndpoint, w, r)
+	}
+
 	// If requesting A or AAAA, we do the routing
 	if state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA {
-		// Check if the query matches the node location service pattern
-		if matches := nodeLocationServicePattern.FindStringSubmatch(qname); len(matches) == 4 {
+		// Check if the query matches the node location endpoint pattern
+		if matches := nodeLocationEndpointPattern.FindStringSubmatch(qname); len(matches) == 4 {
 			nodeName := matches[1]
 			locationName := matches[2]
-			serviceName := dns.Fqdn(matches[3])
+			endpointDNSName := dns.Fqdn(matches[3])
 
-			service, err := e.ServiceManager.GetService(serviceName)
+			dnsEndpoint, err := e.DNSEndpointManager.GetDNSEndpoint(endpointDNSName, state.QType())
 			if err != nil {
-				log.Debug(fmt.Sprintf("edgecdnx: service %s not found for node request %s", serviceName, qname))
+				log.Debugf("edgecdnx: DNSEndpoint for %s not found for node request %s", endpointDNSName, qname)
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+			}
+			if !strings.EqualFold(dnsEndpoint.Spec.RoutingPolicy, "Geolocation") {
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
@@ -142,34 +175,38 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
-			node, err := findNodeInLocation(location, nodeName, service.Spec.RouteSelector)
+			node, err := findNodeInLocation(location, nodeName, dnsEndpoint.Spec.RouteSelector)
 			if err != nil {
 				log.Debug(fmt.Sprintf("edgecdnx: %v", err))
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
-			return e.BuildNodeReponse(node, location.Name, A_AAAA, w, r)
+			return e.BuildNodeReponse(node, location.Name, A_AAAA, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 		}
 
-		// Standard request, find service based on qname and route to correct location based on geo lookup and prefix list routing
-		service, err := e.ServiceManager.GetService(qname)
+		if dnsEndpointErr == nil {
+			switch strings.ToLower(dnsEndpoint.Spec.RoutingPolicy) {
+			case "geolocation":
+			default:
+				log.Warningf("edgecdnx: unsupported routing policy %q for DNSEndpoint %s", dnsEndpoint.Spec.RoutingPolicy, dnsEndpoint.Name)
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+			}
 
-		if err == nil {
-			//Cache type found
-			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state, service)
+			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)
 			if prefixRouted {
 				_, locationErr := e.LocationManager.GetLocationByName(locationName)
-				if locationErr != nil || !e.LocationManager.MatchesNodeGroupLabels(locationName, service.Spec.RouteSelector) {
+				if locationErr != nil || !e.LocationManager.MatchesNodeGroupLabels(locationName, dnsEndpoint.Spec.RouteSelector) {
 					prefixRouted = false
 				}
 			}
 
-			if !prefixRouted || !e.LocationManager.MatchesNodeGroupLabels(locationName, service.Spec.RouteSelector) {
-				locationName, err = e.LocationManager.PerformGeoLookup(ctx, service)
+			if !prefixRouted || !e.LocationManager.MatchesNodeGroupLabels(locationName, dnsEndpoint.Spec.RouteSelector) {
+				geoLocationName, err := e.LocationManager.PerformGeoLookup(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
 				if err != nil {
 					log.Errorf("edgecdnx: GeoLookup failed: %v", err)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
+				locationName = geoLocationName
 			}
 
 			location, err := e.LocationManager.GetLocationByName(locationName)
@@ -182,8 +219,8 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 			filter := HashFilters{
 				Qtype:         state.Req.Question[0].Qtype,
-				RouteSelector: service.Spec.RouteSelector,
-				ServiceName:   service.Name,
+				RouteSelector: dnsEndpoint.Spec.RouteSelector,
+				EndpointName:  dnsEndpoint.Name,
 			}
 
 			node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
@@ -198,15 +235,15 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 						log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", location.Spec.Parent))
 						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 					}
-					if !e.LocationManager.MatchesNodeGroupLabels(parentLocation.Name, service.Spec.RouteSelector) {
-						log.Debugf("edgecdnx: Parent location %s does not match routeSelector for service %s", parentLocation.Name, service.Name)
+					if !e.LocationManager.MatchesNodeGroupLabels(parentLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+						log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s", parentLocation.Name, dnsEndpoint.Name)
 						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 					}
 
 					node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
 					if err == nil {
 						log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, w, r)
+						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 					}
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", parentLocation.Name, err))
 
@@ -221,14 +258,14 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 						log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", fbLoc))
 						continue
 					}
-					if !e.LocationManager.MatchesNodeGroupLabels(fallBackLocation.Name, service.Spec.RouteSelector) {
-						log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for service %s", fbLoc, service.Name)
+					if !e.LocationManager.MatchesNodeGroupLabels(fallBackLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+						log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s", fbLoc, dnsEndpoint.Name)
 						continue
 					}
 					node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
 					if err == nil {
 						log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, w, r)
+						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 					}
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
 				}
@@ -237,7 +274,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 
-			return e.BuildNodeReponse(node.Node, node.LocationName, responseType, w, r)
+			return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 		}
 	}
 
@@ -256,6 +293,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		nxdomain := true
 		var soa dns.RR
 		for _, r := range e.ZoneManager.Records[zone] {
+			// Handle SOA records
 			if r.Header().Rrtype == dns.TypeSOA && soa == nil {
 				soa = r
 			}
@@ -286,6 +324,13 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		w.WriteMsg(m)
 		return dns.RcodeSuccess, nil
 	}
+}
+
+func endpointTTL(dnsEndpoint infrastructurev1alpha1.DNSEndpoint, fallback uint32) uint32 {
+	if dnsEndpoint.Spec.RecordTTL <= 0 {
+		return fallback
+	}
+	return uint32(dnsEndpoint.Spec.RecordTTL)
 }
 
 // Name implements the Handler interface.
