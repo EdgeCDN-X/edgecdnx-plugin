@@ -3,7 +3,7 @@ module github.com/EdgeCDN-X/edgecdnx-plugin
 go 1.25.0
 
 require (
-	github.com/EdgeCDN-X/edgecdnx-controller v0.30.2-0.20260909222417-2cb75ba512a4
+	github.com/EdgeCDN-X/edgecdnx-controller v0.31.0
 	github.com/ancientlore/go-avltree v1.0.3
 	github.com/coredns/caddy v1.1.4
 	github.com/coredns/coredns v1.14.1

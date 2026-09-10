@@ -96,7 +96,8 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 		return FilteredNodeWithMeta{}, fmt.Errorf("Location %s has active alerts", location.Name)
 	}
 
-	// Add only nodes which are not in maintenance mode and match the nodeGroup label selector
+	// Add only nodes which are not in maintenance mode and match the nodeGroup label selector.
+	// Route selectors match against the owning location labels combined with node group labels.
 	for _, ng := range location.Spec.NodeGroups {
 		fullLabels := make(map[string]string)
 		maps.Copy(fullLabels, location.Labels)
@@ -167,6 +168,8 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 				continue
 			}
 
+			// Child node groups are eligible when the route selector matches the child
+			// location labels combined with the child node group labels.
 			for _, ng := range childLocation.Spec.NodeGroups {
 				fullLabels := make(map[string]string)
 				maps.Copy(fullLabels, childLocation.Labels)

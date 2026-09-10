@@ -31,8 +31,9 @@ For each DNS query:
   - If prefix is missing or cache type is not available there, use geo lookup.
 - If the location has active Prometheus alerts (`status.alerts` is non-empty), skip it and try fallback locations instead.
 - Build the candidate node pool for the chosen location:
-  - Include all nodes in the matching cache node group that are not in maintenance mode.
+  - Include all nodes in node groups that match `spec.routeSelector` and are not in maintenance mode. The selector is matched against the location labels combined with the node group labels.
   - Also include nodes from **child locations** (locations whose `spec.parent` equals the chosen location), provided the child location itself is not in maintenance mode and has no active alerts.
+  - For child locations, `spec.routeSelector` is matched against the child location labels combined with the child node group labels.
   - Use deterministic hash on query name to select a node.
   - Enforce IPv4/IPv6 health condition based on query type.
   - Skip nodes with active Prometheus alerts (`status.nodeStatus[node].alerts` is non-empty); try next node in hash order.
