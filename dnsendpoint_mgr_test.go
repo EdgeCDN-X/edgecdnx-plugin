@@ -2,6 +2,7 @@ package edgecdnxplugin
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
@@ -53,5 +54,60 @@ func TestGetDNSEndpointFallsBackToCNAME(t *testing.T) {
 	}
 	if got.Name != dnsEndpoint.Name {
 		t.Fatalf("GetDNSEndpoint().Name = %q, want %q", got.Name, dnsEndpoint.Name)
+	}
+}
+
+func TestGetNextReturnsZeroWhenModIsZero(t *testing.T) {
+	key := dnsEndpointKey("example.com", "A")
+	manager := &DNSEndpointManager{
+		Sync:               &sync.RWMutex{},
+		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
+	}
+
+	if got := manager.GetNext("example.com.", 1, 0); got != 0 {
+		t.Fatalf("GetNext() = %d, want 0", got)
+	}
+}
+
+func TestGetNextReturnsZeroWhenNoCounterExists(t *testing.T) {
+	manager := &DNSEndpointManager{
+		Sync:               &sync.RWMutex{},
+		roundRobinCounters: map[string]*atomic.Uint32{},
+	}
+
+	if got := manager.GetNext("example.com.", 1, 3); got != 0 {
+		t.Fatalf("GetNext() = %d, want 0", got)
+	}
+}
+
+func TestGetNextIncrementsAndWrapsModulo(t *testing.T) {
+	key := dnsEndpointKey("example.com", "A")
+	manager := &DNSEndpointManager{
+		Sync:               &sync.RWMutex{},
+		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
+	}
+
+	want := []int{1, 2, 0, 1, 2, 0}
+	for i, w := range want {
+		if got := manager.GetNext("example.com.", 1, 3); got != w {
+			t.Fatalf("call %d: GetNext() = %d, want %d", i, got, w)
+		}
+	}
+}
+
+func TestGetNextResetsCounterBeforeOverflow(t *testing.T) {
+	key := dnsEndpointKey("example.com", "A")
+	counter := &atomic.Uint32{}
+	counter.Store(roundRobinResetThreshold - 1)
+	manager := &DNSEndpointManager{
+		Sync:               &sync.RWMutex{},
+		roundRobinCounters: map[string]*atomic.Uint32{key: counter},
+	}
+
+	// This call pushes the counter to the reset threshold, triggering a reset to 0.
+	manager.GetNext("example.com.", 1, 5)
+
+	if got := counter.Load(); got != 0 {
+		t.Fatalf("counter after reset = %d, want 0", got)
 	}
 }

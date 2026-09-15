@@ -147,137 +147,144 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		responseType = e.GRPCResponseType
 	}
 
+	// Fetch DNS Endpoint first
 	dnsEndpoint, dnsEndpointErr := e.DNSEndpointManager.GetDNSEndpoint(qname, state.QType())
-	if dnsEndpointErr == nil && strings.EqualFold(dnsEndpoint.Spec.RoutingPolicy, "Simple") {
-		return e.BuildSimpleResponse(dnsEndpoint, w, r)
-	}
 
-	// If requesting A or AAAA, we do the routing
-	if state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA {
-		// Check if the query matches the node location endpoint pattern
-		if matches := nodeLocationEndpointPattern.FindStringSubmatch(qname); len(matches) == 4 {
-			nodeName := matches[1]
-			locationName := matches[2]
-			endpointDNSName := dns.Fqdn(matches[3])
+	// Check if the query matches the node location endpoint pattern
+	if matches := nodeLocationEndpointPattern.FindStringSubmatch(qname); len(matches) == 4 && (state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA) {
+		nodeName := matches[1]
+		locationName := matches[2]
+		endpointDNSName := dns.Fqdn(matches[3])
 
-			dnsEndpoint, err := e.DNSEndpointManager.GetDNSEndpoint(endpointDNSName, state.QType())
-			if err != nil {
-				log.Debugf("edgecdnx: DNSEndpoint for %s not found for node request %s", endpointDNSName, qname)
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-			if !strings.EqualFold(dnsEndpoint.Spec.RoutingPolicy, "Geolocation") {
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-
-			location, err := e.LocationManager.GetLocationByName(locationName)
-			if err != nil {
-				log.Debug(fmt.Sprintf("edgecdnx: location %s not found for node request %s", locationName, qname))
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-
-			node, err := findNodeInLocation(location, nodeName, dnsEndpoint.Spec.RouteSelector)
-			if err != nil {
-				log.Debug(fmt.Sprintf("edgecdnx: %v", err))
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-
-			return e.BuildNodeReponse(node, location.Name, A_AAAA, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+		dnsEndpoint, err := e.DNSEndpointManager.GetDNSEndpoint(endpointDNSName, state.QType())
+		if err != nil {
+			log.Debugf("edgecdnx: DNSEndpoint for %s not found for node request %s", endpointDNSName, qname)
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+		}
+		if !strings.EqualFold(dnsEndpoint.Spec.RoutingPolicy, "Geolocation") {
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
-		if dnsEndpointErr == nil {
-			switch strings.ToLower(dnsEndpoint.Spec.RoutingPolicy) {
-			case "geolocation":
-			default:
-				log.Warningf("edgecdnx: unsupported routing policy %q for DNSEndpoint %s", dnsEndpoint.Spec.RoutingPolicy, dnsEndpoint.Name)
+		location, err := e.LocationManager.GetLocationByName(locationName)
+		if err != nil {
+			log.Debug(fmt.Sprintf("edgecdnx: location %s not found for node request %s", locationName, qname))
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+		}
+
+		node, err := findNodeInLocation(location, nodeName, dnsEndpoint.Spec.RouteSelector)
+		if err != nil {
+			log.Debug(fmt.Sprintf("edgecdnx: %v", err))
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+		}
+
+		return e.BuildNodeReponse(node, location.Name, A_AAAA, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+	}
+
+	// Main Routing Component
+	if dnsEndpointErr == nil {
+		targetLocation := ""
+		switch strings.ToLower(dnsEndpoint.Spec.RoutingPolicy) {
+
+		case "simple":
+			// Simple routing returns as is. No fallbacks
+			return e.BuildSimpleResponse(dnsEndpoint, w, r)
+		case "roundrobin":
+			locations := e.LocationManager.FindMatchingTargets(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+			if len(locations) == 0 {
+				log.Debugf("edgecdnx: No matching locations found for roundrobin routing of DNSEndpoint %s", dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
+			targetIdx := e.DNSEndpointManager.GetNext(qname, state.QType(), len(locations))
+			targetLocation = locations[targetIdx]
+		case "geolocation":
+			// Geolocation for checks available Prefix routed endpoints
+			prefixRouted, matchedLocation := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)
 
-			prefixRouted, locationName := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)
-			if prefixRouted {
-				_, locationErr := e.LocationManager.GetLocationByName(locationName)
-				if locationErr != nil || !e.LocationManager.MatchesNodeGroupLabels(locationName, dnsEndpoint.Spec.RouteSelector) {
-					prefixRouted = false
-				}
-			}
-
-			if !prefixRouted || !e.LocationManager.MatchesNodeGroupLabels(locationName, dnsEndpoint.Spec.RouteSelector) {
-				geoLocationName, err := e.LocationManager.PerformGeoLookup(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
-				if err != nil {
-					log.Errorf("edgecdnx: GeoLookup failed: %v", err)
+			if !prefixRouted {
+				geoLookupLocation, geoLookupErr := e.LocationManager.PerformGeoLookup(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+				if geoLookupErr != nil {
+					log.Errorf("edgecdnx: GeoLookup failed: %v", geoLookupErr)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
-				locationName = geoLocationName
+				targetLocation = geoLookupLocation
+			} else {
+				targetLocation = matchedLocation
 			}
-
-			location, err := e.LocationManager.GetLocationByName(locationName)
-			if err != nil {
-				log.Error(fmt.Sprintf("edgecdnx: Location not found - %v", err))
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-
-			log.Debug(fmt.Sprintf("edgecdnx: Routing to location: %s\n", location.Name))
-
-			filter := HashFilters{
-				Qtype:         state.Req.Question[0].Qtype,
-				RouteSelector: dnsEndpoint.Spec.RouteSelector,
-				EndpointName:  dnsEndpoint.Name,
-			}
-
-			node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
-			if err != nil {
-				log.Debug(fmt.Sprintf("edgecdnx: Hashing error - %v", err))
-
-				if location.Spec.Parent != "" {
-					// If a parent location is specified, attempt to route to the parent location
-					parentLocation, err := e.LocationManager.GetLocationByName(location.Spec.Parent)
-					log.Debug(fmt.Sprintf("edgecdnx: Falling back to parent location %s", location.Spec.Parent))
-					if err != nil {
-						log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", location.Spec.Parent))
-						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-					}
-					if !e.LocationManager.MatchesNodeGroupLabels(parentLocation.Name, dnsEndpoint.Spec.RouteSelector) {
-						log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s", parentLocation.Name, dnsEndpoint.Name)
-						return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-					}
-
-					node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
-					if err == nil {
-						log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
-					}
-					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", parentLocation.Name, err))
-
-					// Continue down the fallback chain with the parent location as the new location
-					location = parentLocation
-				}
-
-				for _, fbLoc := range location.Spec.FallbackLocations {
-					fallBackLocation, err := e.LocationManager.GetLocationByName(fbLoc)
-					log.Debug(fmt.Sprintf("edgecdnx: Falling back to location %s", fbLoc))
-					if err != nil {
-						log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", fbLoc))
-						continue
-					}
-					if !e.LocationManager.MatchesNodeGroupLabels(fallBackLocation.Name, dnsEndpoint.Spec.RouteSelector) {
-						log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s", fbLoc, dnsEndpoint.Name)
-						continue
-					}
-					node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
-					if err == nil {
-						log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-						return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
-					}
-					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
-				}
-
-				log.Error(fmt.Sprintf("edgecdnx: No nodes found for request %s - %v", state.Name(), err))
-				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
-			}
-
-			return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+		default:
+			log.Warningf("edgecdnx: unsupported routing policy %q for DNSEndpoint %s", dnsEndpoint.Spec.RoutingPolicy, dnsEndpoint.Name)
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
+
+		location, err := e.LocationManager.GetLocationByName(targetLocation)
+		if err != nil {
+			log.Error(fmt.Sprintf("edgecdnx: Location not found - %v", err))
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+		}
+
+		log.Debug(fmt.Sprintf("edgecdnx: Routing to location: %s\n", location.Name))
+
+		// Filter filters on additional node labels if routeSelector is present
+		filter := HashFilters{
+			Qtype:         state.Req.Question[0].Qtype,
+			RouteSelector: dnsEndpoint.Spec.RouteSelector,
+			EndpointName:  dnsEndpoint.Name,
+		}
+
+		node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
+		if err != nil {
+			log.Debug(fmt.Sprintf("edgecdnx: Hashing error - %v", err))
+
+			if location.Spec.Parent != "" {
+				// If a parent location is specified, attempt to route to the parent location
+				parentLocation, err := e.LocationManager.GetLocationByName(location.Spec.Parent)
+				log.Debug(fmt.Sprintf("edgecdnx: Falling back to parent location %s", location.Spec.Parent))
+				if err != nil {
+					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", location.Spec.Parent))
+					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+				}
+				if !e.LocationManager.MatchesNodeGroupLabels(parentLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+					log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s", parentLocation.Name, dnsEndpoint.Name)
+					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+				}
+
+				node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
+				if err == nil {
+					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
+					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+				}
+				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", parentLocation.Name, err))
+
+				// Continue down the fallback chain with the parent location as the new location
+				location = parentLocation
+			}
+
+			for _, fbLoc := range location.Spec.FallbackLocations {
+				fallBackLocation, err := e.LocationManager.GetLocationByName(fbLoc)
+				log.Debug(fmt.Sprintf("edgecdnx: Falling back to location %s", fbLoc))
+				if err != nil {
+					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", fbLoc))
+					continue
+				}
+				if !e.LocationManager.MatchesNodeGroupLabels(fallBackLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+					log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s", fbLoc, dnsEndpoint.Name)
+					continue
+				}
+				node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
+				if err == nil {
+					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
+					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+				}
+				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
+			}
+
+			log.Error(fmt.Sprintf("edgecdnx: No nodes found for request %s - %v", state.Name(), err))
+			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+		}
+
+		return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 	}
 
+	// Local Zone Handling
 	e.ZoneManager.Sync.RLock()
 	defer e.ZoneManager.Sync.RUnlock()
 

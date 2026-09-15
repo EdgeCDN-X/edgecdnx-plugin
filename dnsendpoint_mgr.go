@@ -3,8 +3,10 @@ package edgecdnxplugin
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/coredns/coredns/plugin/pkg/log"
@@ -15,19 +17,53 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// roundRobinResetThreshold caps the counter well below the uint32 range so Add never wraps around.
+const roundRobinResetThreshold = math.MaxUint32 - (1 << 16)
+
 type DNSEndpointManagerConfiguration struct {
 	Namespace string
 }
 
 type DNSEndpointManager struct {
-	fac          dynamicinformer.DynamicSharedInformerFactory
-	Informer     cache.SharedIndexInformer
-	Sync         *sync.RWMutex
-	DNSEndpoints map[string]infrastructurev1alpha1.DNSEndpoint
+	fac                dynamicinformer.DynamicSharedInformerFactory
+	Informer           cache.SharedIndexInformer
+	Sync               *sync.RWMutex
+	DNSEndpoints       map[string]infrastructurev1alpha1.DNSEndpoint
+	roundRobinCounters map[string]*atomic.Uint32
 }
 
 func dnsEndpointKey(dnsName string, recordType string) string {
 	return dns.Fqdn(strings.ToLower(dnsName)) + "/" + strings.ToUpper(recordType)
+}
+
+func isRoundRobinPolicy(routingPolicy string) bool {
+	return strings.EqualFold(routingPolicy, "roundrobin")
+}
+
+// GetNext increments the round-robin counter for the DNSEndpoint identified by qname/qtype and
+// returns it modulo mod. If mod is 0, 0 is returned. If no counter exists (e.g. the DNSEndpoint
+// is not RoundRobin routed), 0 is returned.
+func (dm *DNSEndpointManager) GetNext(qname string, qtype uint16, mod int) int {
+	if mod == 0 {
+		return 0
+	}
+
+	recordType := dns.TypeToString[qtype]
+	key := dnsEndpointKey(qname, recordType)
+
+	dm.Sync.RLock()
+	counter, ok := dm.roundRobinCounters[key]
+	dm.Sync.RUnlock()
+	if !ok {
+		return 0
+	}
+
+	next := counter.Add(1)
+	if next >= roundRobinResetThreshold {
+		counter.Store(0)
+	}
+
+	return int(next % uint32(mod))
 }
 
 func (dm *DNSEndpointManager) GetDNSEndpoint(qname string, qtype uint16) (infrastructurev1alpha1.DNSEndpoint, error) {
@@ -50,9 +86,10 @@ func (dm *DNSEndpointManager) GetDNSEndpoint(qname string, qtype uint16) (infras
 
 func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory, config DNSEndpointManagerConfiguration) *DNSEndpointManager {
 	dm := &DNSEndpointManager{
-		fac:          factory,
-		Sync:         &sync.RWMutex{},
-		DNSEndpoints: make(map[string]infrastructurev1alpha1.DNSEndpoint),
+		fac:                factory,
+		Sync:               &sync.RWMutex{},
+		DNSEndpoints:       make(map[string]infrastructurev1alpha1.DNSEndpoint),
+		roundRobinCounters: make(map[string]*atomic.Uint32),
 	}
 
 	dnsEndpointInformer := factory.ForResource(schema.GroupVersionResource{
@@ -73,7 +110,11 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			dm.DNSEndpoints[dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)] = *dnsEndpoint
+			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
+			dm.DNSEndpoints[key] = *dnsEndpoint
+			if isRoundRobinPolicy(dnsEndpoint.Spec.RoutingPolicy) {
+				dm.roundRobinCounters[key] = &atomic.Uint32{}
+			}
 			log.Infof("edgecdnx: Added DNSEndpoint %s", dnsEndpoint.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
@@ -90,8 +131,21 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			delete(dm.DNSEndpoints, dnsEndpointKey(oldDNSEndpoint.Spec.DNSName, oldDNSEndpoint.Spec.RecordType))
-			dm.DNSEndpoints[dnsEndpointKey(newDNSEndpoint.Spec.DNSName, newDNSEndpoint.Spec.RecordType)] = *newDNSEndpoint
+			oldKey := dnsEndpointKey(oldDNSEndpoint.Spec.DNSName, oldDNSEndpoint.Spec.RecordType)
+			newKey := dnsEndpointKey(newDNSEndpoint.Spec.DNSName, newDNSEndpoint.Spec.RecordType)
+			delete(dm.DNSEndpoints, oldKey)
+			dm.DNSEndpoints[newKey] = *newDNSEndpoint
+
+			if oldKey != newKey {
+				delete(dm.roundRobinCounters, oldKey)
+			}
+			if isRoundRobinPolicy(newDNSEndpoint.Spec.RoutingPolicy) {
+				if _, ok := dm.roundRobinCounters[newKey]; !ok {
+					dm.roundRobinCounters[newKey] = &atomic.Uint32{}
+				}
+			} else {
+				delete(dm.roundRobinCounters, newKey)
+			}
 			log.Infof("edgecdnx: Updated DNSEndpoint %s", newDNSEndpoint.Name)
 		},
 		DeleteFunc: func(obj any) {
@@ -103,7 +157,9 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			delete(dm.DNSEndpoints, dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType))
+			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
+			delete(dm.DNSEndpoints, key)
+			delete(dm.roundRobinCounters, key)
 			log.Infof("edgecdnx: Deleted DNSEndpoint %s", dnsEndpoint.Name)
 		},
 	})

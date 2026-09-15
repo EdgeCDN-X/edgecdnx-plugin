@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"slices"
+	"sort"
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -254,6 +255,22 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 	}
 }
 
+func (l LocationManager) FindMatchingTargets(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []string {
+	locations := make([]string, 0)
+
+	l.Sync.RLock()
+	defer l.Sync.RUnlock()
+
+	for locationName, location := range l.Locations {
+		if matchesLabelSelector(location.Labels, routeSelector) {
+			locations = append(locations, locationName)
+		}
+	}
+	// Stable order so round-robin indices consistently map to the same location.
+	sort.Strings(locations)
+	return locations
+}
+
 func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) (string, error) {
 	maxValue := 0
 	locationScore := make(map[string]int)
@@ -365,7 +382,6 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 		Config:    config,
 	}
 
-	// TODO populate caches based on location name
 	locationInformer := locationMgr.fac.ForResource(infrastructurev1alpha1.SchemeGroupVersion.WithResource("locations")).Informer()
 
 	locationInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{

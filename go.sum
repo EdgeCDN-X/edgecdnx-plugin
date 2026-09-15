@@ -1,5 +1,5 @@
-github.com/EdgeCDN-X/edgecdnx-controller v0.31.0 h1:2vMXDVNvJfrAa4tPDq04qXIjEMKwHgnKqvA65c3rtn4=
-github.com/EdgeCDN-X/edgecdnx-controller v0.31.0/go.mod h1:HDsRz/OBRz2Zt/D80aM55kFbDZp/8zinQon/Wdj/sGc=
+github.com/EdgeCDN-X/edgecdnx-controller v0.33.0 h1:tDPbcUZFsxvclFlvXDvX/6nCHamWedZczgc56NdporU=
+github.com/EdgeCDN-X/edgecdnx-controller v0.33.0/go.mod h1:HDsRz/OBRz2Zt/D80aM55kFbDZp/8zinQon/Wdj/sGc=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
 github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/ancientlore/go-avltree v1.0.3 h1:V5MzMHDgM5wn9Zttb+/gcRREetOSz/3WdMW6iOYNg1I=

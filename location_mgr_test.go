@@ -1,6 +1,8 @@
 package edgecdnxplugin
 
 import (
+	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +135,29 @@ func TestApplyHashMatchesNodeGroupLabelsInsteadOfName(t *testing.T) {
 	}
 	if node.Node.Name != "node" {
 		t.Fatalf("node.Name = %q, want %q", node.Node.Name, "node")
+	}
+}
+
+func TestFindMatchingTargetsReturnsSortedLocationNames(t *testing.T) {
+	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
+	locC := newTestLocation("loc-c", map[string]string{"tenant": "acme"}, "", "")
+	locA := newTestLocation("loc-a", map[string]string{"tenant": "acme"}, "", "")
+	locB := newTestLocation("loc-b", map[string]string{"tenant": "acme"}, "", "")
+	unrelated := newTestLocation("loc-d", map[string]string{"tenant": "globex"}, "", "")
+
+	manager := newTestLocationManager(t)
+	manager.Locations[locC.Name] = locC
+	manager.Locations[locA.Name] = locA
+	manager.Locations[locB.Name] = locB
+	manager.Locations[unrelated.Name] = unrelated
+
+	// Run several times since map iteration order is randomized; the result must always be sorted.
+	for i := 0; i < 10; i++ {
+		got := manager.FindMatchingTargets(context.Background(), routeSelector, "endpoint")
+		want := []string{"loc-a", "loc-b", "loc-c"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("FindMatchingTargets() = %v, want %v", got, want)
+		}
 	}
 }
 

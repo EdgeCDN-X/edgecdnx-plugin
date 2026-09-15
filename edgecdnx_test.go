@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
@@ -169,5 +170,120 @@ func TestServeDNSGeolocationEndpointUsesPrefixRoutingAndSelector(t *testing.T) {
 	}
 	if answer.Hdr.Ttl != 45 {
 		t.Fatalf("A TTL = %d, want 45", answer.Hdr.Ttl)
+	}
+}
+
+func TestServeDNSRoundRobinEndpointCyclesThroughLocations(t *testing.T) {
+	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
+	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "example-rr"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName:       "example.com",
+			RoutingPolicy: "RoundRobin",
+			RecordTTL:     30,
+			RecordType:    "A",
+			RouteSelector: routeSelector,
+		},
+	}
+	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
+	dnsEndpointManager := &DNSEndpointManager{
+		Sync: &sync.RWMutex{},
+		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
+			key: dnsEndpoint,
+		},
+		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
+	}
+
+	locA := newTestLocation("loc-a", map[string]string{"tenant": "acme"}, "", "node-a")
+	locA.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
+	locA.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.1"
+
+	locB := newTestLocation("loc-b", map[string]string{"tenant": "acme"}, "", "node-b")
+	locB.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
+	locB.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.2"
+
+	locC := newTestLocation("loc-c", map[string]string{"tenant": "acme"}, "", "node-c")
+	locC.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
+	locC.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.3"
+
+	locationManager := newTestLocationManager(t)
+	locationManager.Locations[locA.Name] = locA
+	locationManager.Locations[locB.Name] = locB
+	locationManager.Locations[locC.Name] = locC
+	locationManager.Config.RecrodTTL = 60
+
+	plugin := EdgeCDNX{
+		DNSEndpointManager: dnsEndpointManager,
+		LocationManager:    &locationManager,
+		DNSResponseType:    A_AAAA,
+	}
+
+	// Sorted locations are [loc-a, loc-b, loc-c]; GetNext starts by incrementing to 1, so
+	// the first response lands on loc-b and then wraps every 3 calls.
+	wantIPs := []string{"192.0.2.2", "192.0.2.3", "192.0.2.1", "192.0.2.2"}
+	for i, want := range wantIPs {
+		request := new(dns.Msg)
+		request.SetQuestion("example.com.", dns.TypeA)
+		writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+			remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+		}}
+
+		rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+		if err != nil {
+			t.Fatalf("call %d: ServeDNS() returned an error: %v", i, err)
+		}
+		if rcode != dns.RcodeSuccess {
+			t.Fatalf("call %d: ServeDNS() rcode = %d, want %d", i, rcode, dns.RcodeSuccess)
+		}
+		if len(writer.msg.Answer) != 1 {
+			t.Fatalf("call %d: len(Answer) = %d, want 1", i, len(writer.msg.Answer))
+		}
+		answer, ok := writer.msg.Answer[0].(*dns.A)
+		if !ok {
+			t.Fatalf("call %d: Answer[0] type = %T, want *dns.A", i, writer.msg.Answer[0])
+		}
+		if got := answer.A.String(); got != want {
+			t.Fatalf("call %d: A target = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestServeDNSRoundRobinEndpointFallsThroughWhenNoLocationsMatch(t *testing.T) {
+	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
+	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "example-rr"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName:       "example.com",
+			RoutingPolicy: "RoundRobin",
+			RecordTTL:     30,
+			RecordType:    "A",
+			RouteSelector: routeSelector,
+		},
+	}
+	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
+	dnsEndpointManager := &DNSEndpointManager{
+		Sync: &sync.RWMutex{},
+		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
+			key: dnsEndpoint,
+		},
+		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
+	}
+
+	locationManager := newTestLocationManager(t)
+
+	plugin := EdgeCDNX{
+		DNSEndpointManager: dnsEndpointManager,
+		LocationManager:    &locationManager,
+		DNSResponseType:    A_AAAA,
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+	}}
+
+	_, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err == nil {
+		t.Fatal("expected an error when no locations match the route selector")
 	}
 }
