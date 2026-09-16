@@ -256,18 +256,29 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 }
 
 func (l LocationManager) FindMatchingTargets(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []string {
-	locations := make([]string, 0)
+	weightedLocations := l.FindMatchingTargetsWithWeights(ctx, routeSelector, endpointName)
+	locations := make([]string, 0, len(weightedLocations))
+	for _, location := range weightedLocations {
+		locations = append(locations, location.Name)
+	}
+	return locations
+}
+
+func (l LocationManager) FindMatchingTargetsWithWeights(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []weightedTarget {
+	locations := make([]weightedTarget, 0)
 
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
 	for locationName, location := range l.Locations {
 		if matchesLabelSelector(location.Labels, routeSelector) {
-			locations = append(locations, locationName)
+			locations = append(locations, weightedTarget{Name: locationName, Weight: location.Spec.Weight})
 		}
 	}
 	// Stable order so round-robin indices consistently map to the same location.
-	sort.Strings(locations)
+	sort.Slice(locations, func(i, j int) bool {
+		return locations[i].Name < locations[j].Name
+	})
 	return locations
 }
 

@@ -196,6 +196,21 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			}
 			targetIdx := e.DNSEndpointManager.GetNext(qname, state.QType(), len(locations))
 			targetLocation = locations[targetIdx]
+		case "weighted":
+			locations := e.LocationManager.FindMatchingTargetsWithWeights(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+			if len(locations) == 0 {
+				log.Debugf("edgecdnx: No matching locations found for weighted routing of DNSEndpoint %s", dnsEndpoint.Name)
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+			}
+			targetIdx := e.DNSEndpointManager.GetWeightedNext(qname, state.QType(), locations)
+			targetLocation = locations[targetIdx].Name
+		case "failover":
+			// Selects Primary target. Primary target fails over to the next if unavailable
+			if len(dnsEndpoint.Spec.Targets) == 0 {
+				log.Debugf("edgecdnx: No primary target specified for failover routing of DNSEndpoint %s", dnsEndpoint.Name)
+				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
+			}
+			targetLocation = dnsEndpoint.Spec.Targets[0]
 		case "geolocation":
 			// Geolocation for checks available Prefix routed endpoints
 			prefixRouted, matchedLocation := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)

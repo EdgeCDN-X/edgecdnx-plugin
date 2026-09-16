@@ -30,6 +30,19 @@ type DNSEndpointManager struct {
 	Sync               *sync.RWMutex
 	DNSEndpoints       map[string]infrastructurev1alpha1.DNSEndpoint
 	roundRobinCounters map[string]*atomic.Uint32
+	weightedStates     map[string]*weightedRoundRobinState
+}
+
+type weightedTarget struct {
+	Name   string
+	Weight int32
+}
+
+type weightedRoundRobinState struct {
+	sync.Mutex
+	targets     []weightedTarget
+	current     []int64
+	totalWeight int64
 }
 
 func dnsEndpointKey(dnsName string, recordType string) string {
@@ -66,6 +79,85 @@ func (dm *DNSEndpointManager) GetNext(qname string, qtype uint16, mod int) int {
 	return int(next % uint32(mod))
 }
 
+// GetWeightedNext selects a target using smooth weighted round robin. The current
+// weights are used as the scheduling quantum, so the target list is never expanded.
+func (dm *DNSEndpointManager) GetWeightedNext(qname string, qtype uint16, targets []weightedTarget) int {
+	if len(targets) == 0 {
+		return 0
+	}
+
+	recordType := dns.TypeToString[qtype]
+	key := dnsEndpointKey(qname, recordType)
+
+	dm.Sync.RLock()
+	state, ok := dm.weightedStates[key]
+	dm.Sync.RUnlock()
+	if !ok {
+		dm.Sync.Lock()
+		if dm.weightedStates == nil {
+			dm.weightedStates = make(map[string]*weightedRoundRobinState)
+		}
+		state, ok = dm.weightedStates[key]
+		if !ok {
+			state = &weightedRoundRobinState{}
+			dm.weightedStates[key] = state
+		}
+		dm.Sync.Unlock()
+	}
+
+	state.Lock()
+	defer state.Unlock()
+
+	if !sameWeightedTargets(state.targets, targets) {
+		state.targets = append(state.targets[:0], targets...)
+		state.current = make([]int64, len(targets))
+		state.totalWeight = 0
+		for _, target := range targets {
+			if target.Weight > 0 {
+				state.totalWeight += int64(target.Weight)
+			}
+		}
+	}
+
+	allWeightsZero := state.totalWeight == 0
+	if allWeightsZero {
+		state.totalWeight = int64(len(state.targets))
+	}
+
+	selected := 0
+	for i, target := range state.targets {
+		weight := int64(target.Weight)
+		if allWeightsZero {
+			weight = 1
+		}
+		if weight <= 0 {
+			continue
+		}
+
+		state.current[i] += weight
+		if state.current[i] > state.current[selected] {
+			selected = i
+		}
+	}
+
+	state.current[selected] -= state.totalWeight
+	return selected
+}
+
+func sameWeightedTargets(left, right []weightedTarget) bool {
+	if len(left) != len(right) {
+		return false
+	}
+
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (dm *DNSEndpointManager) GetDNSEndpoint(qname string, qtype uint16) (infrastructurev1alpha1.DNSEndpoint, error) {
 	recordType := dns.TypeToString[qtype]
 	log.Debugf("edgecdnx: Looking up DNSEndpoint for %s %s", qname, recordType)
@@ -90,6 +182,7 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 		Sync:               &sync.RWMutex{},
 		DNSEndpoints:       make(map[string]infrastructurev1alpha1.DNSEndpoint),
 		roundRobinCounters: make(map[string]*atomic.Uint32),
+		weightedStates:     make(map[string]*weightedRoundRobinState),
 	}
 
 	dnsEndpointInformer := factory.ForResource(schema.GroupVersionResource{
@@ -160,6 +253,7 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
 			delete(dm.DNSEndpoints, key)
 			delete(dm.roundRobinCounters, key)
+			delete(dm.weightedStates, key)
 			log.Infof("edgecdnx: Deleted DNSEndpoint %s", dnsEndpoint.Name)
 		},
 	})

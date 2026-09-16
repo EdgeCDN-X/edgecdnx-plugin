@@ -111,3 +111,28 @@ func TestGetNextResetsCounterBeforeOverflow(t *testing.T) {
 		t.Fatalf("counter after reset = %d, want 0", got)
 	}
 }
+
+func TestGetWeightedNextUsesSmoothWeightedRoundRobin(t *testing.T) {
+	manager := &DNSEndpointManager{Sync: &sync.RWMutex{}}
+	targets := []weightedTarget{
+		{Name: "loc-a", Weight: 1},
+		{Name: "loc-b", Weight: 2},
+	}
+
+	want := []int{1, 0, 1, 1, 0, 1}
+	for i, expected := range want {
+		if got := manager.GetWeightedNext("example.com.", 1, targets); got != expected {
+			t.Fatalf("call %d: GetWeightedNext() = %d, want %d", i, got, expected)
+		}
+	}
+}
+
+func TestGetWeightedNextResetsWhenWeightsChange(t *testing.T) {
+	manager := &DNSEndpointManager{Sync: &sync.RWMutex{}}
+
+	manager.GetWeightedNext("example.com.", 1, []weightedTarget{{Name: "loc-a", Weight: 1}, {Name: "loc-b", Weight: 2}})
+	got := manager.GetWeightedNext("example.com.", 1, []weightedTarget{{Name: "loc-a", Weight: 2}, {Name: "loc-b", Weight: 1}})
+	if got != 0 {
+		t.Fatalf("GetWeightedNext() after weight change = %d, want 0", got)
+	}
+}

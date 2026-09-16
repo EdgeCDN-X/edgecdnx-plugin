@@ -287,3 +287,137 @@ func TestServeDNSRoundRobinEndpointFallsThroughWhenNoLocationsMatch(t *testing.T
 		t.Fatal("expected an error when no locations match the route selector")
 	}
 }
+
+func TestServeDNSFailoverEndpointUsesPrimaryLocation(t *testing.T) {
+	plugin, endpointKey := newFailoverTestPlugin(t, false, false)
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	writer := newCaptureResponseWriter()
+
+	rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err != nil {
+		t.Fatalf("ServeDNS() returned an error: %v", err)
+	}
+	if rcode != dns.RcodeSuccess {
+		t.Fatalf("ServeDNS() rcode = %d, want %d", rcode, dns.RcodeSuccess)
+	}
+	assertFailoverAnswer(t, writer, "192.0.2.1")
+	if endpointKey == "" {
+		t.Fatal("failover endpoint key must not be empty")
+	}
+}
+
+func TestServeDNSFailoverEndpointUsesFirstHealthyFallback(t *testing.T) {
+	plugin, _ := newFailoverTestPlugin(t, true, false)
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	writer := newCaptureResponseWriter()
+
+	rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err != nil {
+		t.Fatalf("ServeDNS() returned an error: %v", err)
+	}
+	if rcode != dns.RcodeSuccess {
+		t.Fatalf("ServeDNS() rcode = %d, want %d", rcode, dns.RcodeSuccess)
+	}
+	assertFailoverAnswer(t, writer, "192.0.2.2")
+}
+
+func TestServeDNSFailoverEndpointFailsWhenAllLocationsUnhealthy(t *testing.T) {
+	plugin, _ := newFailoverTestPlugin(t, true, true)
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	writer := newCaptureResponseWriter()
+
+	_, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err == nil {
+		t.Fatal("expected an error when the primary and fallback locations are unhealthy")
+	}
+	if writer.msg != nil {
+		t.Fatal("ServeDNS() wrote a response despite all failover locations being unhealthy")
+	}
+}
+
+func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy bool) (EdgeCDNX, string) {
+	t.Helper()
+	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
+	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "example-failover"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName:       "example.com",
+			RoutingPolicy: "Failover",
+			RecordTTL:     30,
+			RecordType:    "A",
+			Targets:       []string{"primary"},
+			RouteSelector: routeSelector,
+		},
+	}
+	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
+	dnsEndpointManager := &DNSEndpointManager{
+		Sync: &sync.RWMutex{},
+		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
+			key: dnsEndpoint,
+		},
+	}
+
+	primary := newTestLocation("primary", map[string]string{"tenant": "acme"}, "", "primary-node")
+	primary.Spec.FallbackLocations = []string{"backup"}
+	backup := newTestLocation("backup", map[string]string{"tenant": "acme"}, "", "backup-node")
+	backup.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.2"
+	if primaryUnhealthy {
+		setTestNodeHealth(&primary, false)
+	}
+	if fallbackUnhealthy {
+		setTestNodeHealth(&backup, false)
+	}
+
+	locationManager := newTestLocationManager(t)
+	locationManager.Locations[primary.Name] = primary
+	locationManager.Locations[backup.Name] = backup
+	locationManager.Config.RecrodTTL = 60
+
+	return EdgeCDNX{
+		DNSEndpointManager: &DNSEndpointManager{
+			Sync:               dnsEndpointManager.Sync,
+			DNSEndpoints:       dnsEndpointManager.DNSEndpoints,
+			roundRobinCounters: map[string]*atomic.Uint32{},
+		},
+		LocationManager: &locationManager,
+		DNSResponseType: A_AAAA,
+	}, key
+}
+
+func setTestNodeHealth(location *infrastructurev1alpha1.Location, healthy bool) {
+	nodeName := location.Spec.NodeGroups[0].Nodes[0].Name
+	location.Status.NodeStatus = map[string]infrastructurev1alpha1.NodeInstanceStatus{
+		nodeName: {
+			Conditions: []infrastructurev1alpha1.NodeCondition{{
+				Type:   infrastructurev1alpha1.IPV4HealthCheckSuccessful,
+				Status: healthy,
+			}},
+		},
+	}
+}
+
+func newCaptureResponseWriter() *captureResponseWriter {
+	return &captureResponseWriter{testResponseWriter: testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+	}}
+}
+
+func assertFailoverAnswer(t *testing.T, writer *captureResponseWriter, want string) {
+	t.Helper()
+	if writer.msg == nil {
+		t.Fatal("ServeDNS() did not write a response")
+	}
+	if len(writer.msg.Answer) != 1 {
+		t.Fatalf("len(Answer) = %d, want 1", len(writer.msg.Answer))
+	}
+	answer, ok := writer.msg.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0] type = %T, want *dns.A", writer.msg.Answer[0])
+	}
+	if got := answer.A.String(); got != want {
+		t.Fatalf("A target = %q, want %q", got, want)
+	}
+}
