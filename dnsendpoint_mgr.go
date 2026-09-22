@@ -91,8 +91,10 @@ func (dm *DNSEndpointManager) GetWeightedNext(qname string, qtype uint16, target
 
 	dm.Sync.RLock()
 	state, ok := dm.weightedStates[key]
-	dm.Sync.RUnlock()
 	if !ok {
+		// If no weighted state exists for this key, create one.
+		// Lock the map for writing to create the weighted state.
+		dm.Sync.RUnlock()
 		dm.Sync.Lock()
 		if dm.weightedStates == nil {
 			dm.weightedStates = make(map[string]*weightedRoundRobinState)
@@ -103,7 +105,10 @@ func (dm *DNSEndpointManager) GetWeightedNext(qname string, qtype uint16, target
 			dm.weightedStates[key] = state
 		}
 		dm.Sync.Unlock()
+		dm.Sync.RLock()
 	}
+	// Hold the map read lock while using state so DeleteFunc can't remove it from under us.
+	defer dm.Sync.RUnlock()
 
 	state.Lock()
 	defer state.Unlock()

@@ -1,8 +1,6 @@
 package edgecdnxplugin
 
 import (
-	"sync"
-
 	"github.com/coredns/coredns/plugin"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,5 +14,3 @@ var requestCount = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name:      "request_count_total",
 	Help:      "Counter of requests made.",
 }, []string{"server"})
-
-var once sync.Once
