@@ -32,7 +32,7 @@ The plugin implements the `DNSEndpoint` CRD routing modes and record types defin
 
 ### Routing policy examples
 
-The examples below live under [edgecdnx-plugin/examples/dnsendpoint-routing](edgecdnx-plugin/examples/dnsendpoint-routing) and each policy has its own subfolder.
+The examples below live under [examples/dnsendpoint-routing](examples/dnsendpoint-routing) and each policy has its own subfolder.
 
 #### Node-group targeting inside a location
 
@@ -40,7 +40,7 @@ This pattern is useful when a single `Location` contains multiple node groups, e
 
 The selection is made by combining location labels with node-group labels before evaluating `routeSelector`.
 
-See: [examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml](examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -101,7 +101,7 @@ This makes the endpoint select only the `edge` node group in the `us-east` locat
 
 Use `Simple` for explicit static targets.
 
-See: [examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml](examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -123,7 +123,7 @@ spec:
 
 Use `Weighted` when response selection should prefer some matching locations over others based on weighting metadata.
 
-See: [examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml](examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -146,7 +146,7 @@ spec:
 
 Use `Failover` to prefer a primary location and move to healthier alternatives when needed. In this implementation, the first entry in `spec.targets` is treated as a `Location` name, not a literal DNS hostname.
 
-See: [examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml](examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -170,7 +170,7 @@ spec:
 
 Use `Geolocation` to choose a location based on `routeSelector`, prefix routing, or geo metadata lookup. The `Location.spec.geoLookup.attributes` map should include CoreDNS GeoIP metadata such as `geoip/continent/code` with a weight of `1000` for the matching continent values.
 
-See: [examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml](examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -219,7 +219,7 @@ spec:
 
 Use `RoundRobin` to rotate across multiple matching locations or node groups in a stable sequence.
 
-See: [examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml)
+See: [examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml](examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml)
 
 ```yaml
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
