@@ -65,18 +65,6 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 	m.SetReply(r)
 	m.Authoritative = true
 
-	srcIP := net.ParseIP(state.IP())
-	if o := state.Req.IsEdns0(); o != nil {
-		for _, s := range o.Option {
-			if e, ok := s.(*dns.EDNS0_SUBNET); ok {
-				srcIP = e.Address
-				break
-			}
-		}
-	}
-
-	log.Debug(fmt.Sprintf("edgecdnx: Request Source IP %s", srcIP))
-
 	if responseType == CNAME {
 		res := new(dns.CNAME)
 		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}

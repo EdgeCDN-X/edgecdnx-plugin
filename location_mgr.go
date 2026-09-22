@@ -201,7 +201,7 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 		}
 	}
 
-	log.Debugf("edgecdnx: Found %d nodes in location %s matching label selector %s", len(filteredNodes), location.Name, filters.RouteSelector)
+	log.Debugf("edgecdnx: %d node available in location %s matching label selector %s", len(filteredNodes), location.Name, filters.RouteSelector)
 
 	for {
 		if len(filteredNodes) == 0 {
@@ -296,17 +296,15 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *me
 			maps.Copy(fullLabels, ng.Labels)
 			return matchesLabelSelector(fullLabels, routeSelector)
 		}) {
-			log.Debugf("edgecdnx: skipping location %s as no node group matches routeSelector for DNSEndpoint %s", locationName, endpointName)
 			continue
 		}
 
 		for attrName, attribute := range location.Spec.GeoLookup.Attributes {
 			if lookupFunc := metadata.ValueFunc(ctx, attrName); lookupFunc != nil {
 				if lookupValue := lookupFunc(); lookupValue != "" {
-					log.Debugf("edgecdnx: looking up attribute %s with value %s", attrName, lookupValue)
 					for _, attributeValue := range attribute.Values {
 						if attributeValue.Value == lookupValue {
-							log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s", attrName, lookupValue))
+							log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s", attrName, lookupValue, locationName))
 
 							currScore, ok := locationScore[locationName]
 							if !ok {
@@ -334,8 +332,6 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *me
 	log.Debug(fmt.Sprintf("edgecdnx: found %d locations with score %d: %v", len(winners), maxValue, winners))
 
 	if len(winners) > 1 {
-		log.Debug(fmt.Sprintf("edgecdnx: multiple locations found with same score %d: %v", maxValue, winners))
-
 		randomNumber := rand.Float64()
 		totalWeigth := 0
 
