@@ -67,8 +67,7 @@ func newTestLocation(name string, labels map[string]string, parent string, nodeN
 	if nodeName != "" {
 		location.Spec.NodeGroups = []infrastructurev1alpha1.NodeGroupSpec{
 			{
-				Name:   "cache-a",
-				Flavor: "default",
+				Name: "cache-a",
 				Nodes: []infrastructurev1alpha1.NodeSpec{
 					{
 						Name: nodeName,

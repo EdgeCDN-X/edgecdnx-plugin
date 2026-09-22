@@ -1,0 +1,55 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: failover-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Failover
+  recordTTL: 60
+  recordType: A
+  targets:
+    - us-east
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: us-east
+  labels:
+    edgecdnx.com/routing-instance: edgecdnx
+    edgecdnx.com/tenant: tbotech
+    edgecdnx.com/region: us-east
+spec:
+  weight: 100
+  fallbackLocations:
+    - eu-central
+  nodeGroups:
+    - name: default
+      nodes:
+        - name: us-east-node-1
+          ipv4: 198.51.100.21
+      labels:
+        region: us-east
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: eu-central
+  labels:
+    edgecdnx.com/routing-instance: edgecdnx
+    edgecdnx.com/tenant: tbotech
+    edgecdnx.com/region: eu-central
+spec:
+  weight: 100
+  fallbackLocations:
+    - us-east
+  nodeGroups:
+    - name: default
+      nodes:
+        - name: eu-central-node-1
+          ipv4: 198.51.100.31
+      labels:
+        region: eu-central

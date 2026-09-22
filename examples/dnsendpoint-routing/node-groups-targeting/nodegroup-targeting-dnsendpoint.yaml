@@ -1,0 +1,42 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: nodegroup-targeting-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Geolocation
+  recordTTL: 60
+  recordType: A
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+      role: edge
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: us-east
+  labels:
+    edgecdnx.com/routing-instance: edgecdnx
+    edgecdnx.com/tenant: tbotech
+spec:
+  nodeGroups:
+    - name: edge
+      labels:
+        role: edge
+      nodes:
+        - name: us-east-edge-1
+          ipv4: 198.51.100.41
+    - name: ingress
+      labels:
+        role: ingress
+      nodes:
+        - name: us-east-ingress-1
+          ipv4: 198.51.100.42
+    - name: cache
+      labels:
+        role: cache
+      nodes:
+        - name: us-east-cache-1
+          ipv4: 198.51.100.43

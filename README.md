@@ -5,6 +5,8 @@
 It supports:
 - Dynamic `DNSEndpoint` routing for `A` and `AAAA` queries
 - Direct answers from `Simple` DNSEndpoint targets
+- `Simple`, `Weighted`, `Failover`, `Geolocation`, and `RoundRobin` routing policies
+- DNS record types `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`, and `NS`
 - Configurable dynamic answers as `A`/`AAAA` or `CNAME`
 - Alternate response mode for gRPC-originated requests detected from incoming context metadata
 - Direct node resolution for hostnames in the form `node.location.node.service`
@@ -13,6 +15,242 @@ It supports:
 - Hash-based node selection with health-aware filtering, spanning child locations
 - Parent location fallback, followed by configured fallback locations, when a primary location has no healthy node
 - Authoritative zone responses for configured Zone CRDs (SOA/NS and related behavior)
+
+## DNSEndpoint Types
+
+The plugin implements the `DNSEndpoint` CRD routing modes and record types defined by the API schema:
+
+### Routing policies
+
+| Policy | Purpose | Typical fields |
+| --- | --- | --- |
+| `Simple` | Return `spec.targets` directly, using `spec.recordType` and `spec.recordTTL`. | `targets`, `recordType`, `recordTTL` |
+| `Weighted` | Select a matching location or node set using `routeSelector` and location weights. | `routeSelector`, `recordType`, `recordTTL` |
+| `Failover` | Prefer the primary location named in `spec.targets[0]`, then fall back through healthy alternatives in that location's `fallbackLocations` or configured hierarchy. | `targets`, `routeSelector`, `recordType`, `recordTTL` |
+| `Geolocation` | Resolve the best location from `routeSelector` using prefix routing or geo metadata. | `routeSelector`, `recordType`, `recordTTL` |
+| `RoundRobin` | Rotate through matching locations in a deterministic round-robin sequence. | `routeSelector`, `recordType`, `recordTTL` |
+
+### Routing policy examples
+
+The examples below live under [edgecdnx-plugin/examples/dnsendpoint-routing](edgecdnx-plugin/examples/dnsendpoint-routing) and each policy has its own subfolder.
+
+#### Node-group targeting inside a location
+
+This pattern is useful when a single `Location` contains multiple node groups, each with different labels, and you want the DNSEndpoint to match only a subset of the node groups.
+
+The selection is made by combining location labels with node-group labels before evaluating `routeSelector`.
+
+See: [examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/node-groups-targeting/nodegroup-targeting-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: nodegroup-targeting-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Geolocation
+  recordTTL: 60
+  recordType: A
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+      role: edge
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: us-east
+  labels:
+    edgecdnx.com/routing-instance: edgecdnx
+    edgecdnx.com/tenant: tbotech
+spec:
+  geoLookup:
+    weight: 100
+    attributes:
+      geoip/continent/code:
+        weight: 1000
+        values:
+          - value: NA
+          - value: SA
+  nodeGroups:
+    - name: edge
+      labels:
+        role: edge
+      nodes:
+        - name: us-east-edge-1
+          ipv4: 198.51.100.41
+    - name: ingress
+      labels:
+        role: ingress
+      nodes:
+        - name: us-east-ingress-1
+          ipv4: 198.51.100.42
+    - name: cache
+      labels:
+        role: cache
+      nodes:
+        - name: us-east-cache-1
+          ipv4: 198.51.100.43
+```
+
+This makes the endpoint select only the `edge` node group in the `us-east` location, while ignoring `ingress` and `cache` nodes in the same location.
+
+#### Simple
+
+Use `Simple` for explicit static targets.
+
+See: [examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/simple/simple-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: simple-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Simple
+  recordTTL: 60
+  recordType: A
+  targets:
+    - 203.0.113.10
+    - 203.0.113.11
+```
+
+#### Weighted
+
+Use `Weighted` when response selection should prefer some matching locations over others based on weighting metadata.
+
+See: [examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/weighted/weighted-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: weighted-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Weighted
+  recordTTL: 60
+  recordType: A
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+      edgecdnx.com/region: us-east
+```
+
+#### Failover
+
+Use `Failover` to prefer a primary location and move to healthier alternatives when needed. In this implementation, the first entry in `spec.targets` is treated as a `Location` name, not a literal DNS hostname.
+
+See: [examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/failover/failover-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: failover-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Failover
+  recordTTL: 60
+  recordType: A
+  targets:
+    - us-east
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+```
+
+#### Geolocation
+
+Use `Geolocation` to choose a location based on `routeSelector`, prefix routing, or geo metadata lookup. The `Location.spec.geoLookup.attributes` map should include CoreDNS GeoIP metadata such as `geoip/continent/code` with a weight of `1000` for the matching continent values.
+
+See: [examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: geolocation-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Geolocation
+  recordTTL: 60
+  recordType: A
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+      edgecdnx.com/region: us-east
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Location
+metadata:
+  name: us-east
+  labels:
+    edgecdnx.com/routing-instance: edgecdnx
+    edgecdnx.com/tenant: tbotech
+    edgecdnx.com/region: us-east
+spec:
+  weight: 100
+  geoLookup:
+    weight: 100
+    attributes:
+      geoip/continent/code:
+        weight: 1000
+        values:
+          - value: NA
+          - value: SA
+  fallbackLocations:
+    - eu-central
+  nodeGroups:
+    - name: default
+      nodes:
+        - name: us-east-node-1
+          ipv4: 198.51.100.21
+```
+
+#### RoundRobin
+
+Use `RoundRobin` to rotate across multiple matching locations or node groups in a stable sequence.
+
+See: [examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml](edgecdnx-plugin/examples/dnsendpoint-routing/roundrobin/roundrobin-dnsendpoint.yaml)
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: roundrobin-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: RoundRobin
+  recordTTL: 60
+  recordType: A
+  routeSelector:
+    matchLabels:
+      edgecdnx.com/tenant: tbotech
+      edgecdnx.com/site: edge
+```
+
+### Supported record types
+
+`DNSEndpoint.spec.recordType` supports:
+
+- `A`
+- `AAAA`
+- `CNAME`
+- `TXT`
+- `MX`
+- `SRV`
+- `NS`
+
+These values are validated by the CRD and are used when building DNS responses or validating target data for `Simple` and rule-driven endpoints.
 
 ## How It Works
 

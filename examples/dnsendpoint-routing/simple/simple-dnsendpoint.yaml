@@ -1,0 +1,13 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: simple-demo
+  namespace: edgecdnx
+spec:
+  dnsName: app.example.com
+  routingPolicy: Simple
+  recordTTL: 60
+  recordType: A
+  targets:
+    - 203.0.113.10
+    - 203.0.113.11
