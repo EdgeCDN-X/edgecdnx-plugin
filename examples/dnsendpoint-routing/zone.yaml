@@ -1,0 +1,9 @@
+---
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: Zone
+metadata:
+  name: example.com
+  namespace: edgecdnx
+spec:
+  zone: example.com
+  email: noc.example.com.
