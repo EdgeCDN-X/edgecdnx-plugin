@@ -222,21 +222,17 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 		if idx := slices.IndexFunc(node.NodeStatus.Conditions, func(c infrastructurev1alpha1.NodeCondition) bool {
 			switch filters.Qtype {
 			case dns.TypeA:
-				return c.Type == infrastructurev1alpha1.IPV4HealthCheckSuccessful
+				return c.Type == infrastructurev1alpha1.HealthCheckSuccessful && c.Status == false && (c.Stack == infrastructurev1alpha1.StackTypeIPv4 || c.Stack == infrastructurev1alpha1.StackTypeDual)
 			case dns.TypeAAAA:
-				return c.Type == infrastructurev1alpha1.IPV6HealthCheckSuccessful
+				return c.Type == infrastructurev1alpha1.HealthCheckSuccessful && c.Status == false && (c.Stack == infrastructurev1alpha1.StackTypeIPv6 || c.Stack == infrastructurev1alpha1.StackTypeDual)
 			default:
 				return false
 			}
-		}); idx != -1 {
+		}); idx > -1 {
 			condition := node.NodeStatus.Conditions[idx]
-			if !condition.Status {
-				log.Debugf("edgecdnx: Node %s is not healthy for qtype %d, trying next node", node.Node.Name, filters.Qtype)
-				filteredNodes = slices.Delete(filteredNodes, nodeIndex, nodeIndex+1)
-				continue
-			}
-		} else {
-			log.Debugf("edgecdnx: Node %s has no health check condition for qtype %d, assuming healthy", node.Node.Name, filters.Qtype)
+			log.Debugf("edgecdnx: Node %s is not Healthy, HealthCheck %s is failing with reason %s", node.Node.Name, condition.HealthCheckKey, condition.Reason)
+			filteredNodes = slices.Delete(filteredNodes, nodeIndex, nodeIndex+1)
+			continue
 		}
 
 		if node.NodeStatus.Alerts != nil && len(node.NodeStatus.Alerts) > 0 {

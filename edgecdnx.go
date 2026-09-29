@@ -280,7 +280,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
 			}
 
-			log.Error(fmt.Sprintf("edgecdnx: No nodes found for request %s - %v", state.Name(), err))
+			log.Info(fmt.Sprintf("edgecdnx: No nodes found for request %s - %v", state.Name(), err))
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 

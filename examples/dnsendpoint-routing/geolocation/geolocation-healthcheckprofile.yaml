@@ -1,0 +1,37 @@
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: HealthCheckProfile
+metadata:
+  name: healthcheckprofile
+spec:
+  probes:
+    - type: ASSUME
+      timeout: 1s
+      interval: 15s
+      name: assume
+      assume:
+        stack: Dual
+        status: Healthy
+    - type: HTTP
+      timeout: 10s
+      interval: 15s
+      name: https
+      http:
+        stack: IPv4
+        protocol: http
+        path: /healthz
+    - type: HTTP
+      timeout: 10s
+      interval: 15s
+      name: external-example-com
+      http:
+        stack: IPv4
+        protocol: https
+        host: example.com
+        target: example.com
+    - type: TCP
+      timeout: 10s
+      interval: 15s
+      name: tcp
+      tcp:
+        stack: IPv4
+        port: 80

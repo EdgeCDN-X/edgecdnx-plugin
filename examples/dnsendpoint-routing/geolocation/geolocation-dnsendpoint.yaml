@@ -34,9 +34,12 @@ spec:
     - eu-central
   nodeGroups:
     - name: default
+      healthCheck:
+        name: healthcheckprofile
+      flavor: ""
       nodes:
         - name: us-east-node-1
-          ipv4: 198.51.100.21
+          ipv4: 74.220.24.46
       labels:
         region: us-east
 ---
@@ -63,8 +66,11 @@ spec:
     - us-east
   nodeGroups:
     - name: default
+      healthCheck:
+        name: healthcheckprofile
+      flavor: ""
       nodes:
         - name: eu-central-node-1
-          ipv4: 198.51.100.31
+          ipv4: 74.220.31.183
       labels:
         region: eu-central
