@@ -10,7 +10,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
       role: edge
 ---
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -19,7 +19,7 @@ metadata:
   name: us-east
   labels:
     edgecdnx.com/routing-instance: edgecdnx
-    edgecdnx.com/tenant: tbotech
+    project: tbotech
 spec:
   nodeGroups:
     - name: edge

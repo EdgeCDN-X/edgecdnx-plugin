@@ -55,7 +55,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
       role: edge
 ---
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -64,7 +64,7 @@ metadata:
   name: us-east
   labels:
     edgecdnx.com/routing-instance: edgecdnx
-    edgecdnx.com/tenant: tbotech
+    project: tbotech
 spec:
   geoLookup:
     weight: 100
@@ -138,7 +138,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
       edgecdnx.com/region: us-east
 ```
 
@@ -163,7 +163,7 @@ spec:
     - us-east
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
 ```
 
 #### Geolocation
@@ -185,7 +185,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
       edgecdnx.com/region: us-east
 ---
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
@@ -194,7 +194,7 @@ metadata:
   name: us-east
   labels:
     edgecdnx.com/routing-instance: edgecdnx
-    edgecdnx.com/tenant: tbotech
+    project: tbotech
     edgecdnx.com/region: us-east
 spec:
   weight: 100
@@ -234,7 +234,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
       edgecdnx.com/site: edge
 ```
 

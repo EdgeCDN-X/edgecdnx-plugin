@@ -10,7 +10,7 @@ spec:
   recordType: A
   routeSelector:
     matchLabels:
-      edgecdnx.com/tenant: tbotech
+      project: tbotech
 ---
 apiVersion: infrastructure.edgecdnx.com/v1alpha1
 kind: Location
@@ -18,7 +18,7 @@ metadata:
   name: us-east
   labels:
     edgecdnx.com/routing-instance: edgecdnx
-    edgecdnx.com/tenant: tbotech
+    project: tbotech
     edgecdnx.com/region: us-east
 spec:
   weight: 100
@@ -49,7 +49,7 @@ metadata:
   name: eu-central
   labels:
     edgecdnx.com/routing-instance: edgecdnx
-    edgecdnx.com/tenant: tbotech
+    project: tbotech
     edgecdnx.com/region: eu-central
 spec:
   weight: 100
