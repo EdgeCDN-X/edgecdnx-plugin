@@ -168,7 +168,7 @@ spec:
 
 #### Geolocation
 
-Use `Geolocation` to choose a location based on `routeSelector`, prefix routing, or geo metadata lookup. The `Location.spec.geoLookup.attributes` map should include CoreDNS GeoIP metadata such as `geoip/continent/code` with a weight of `1000` for the matching continent values.
+Use `Geolocation` to choose a location based on `routeSelector`, prefix routing, or geo metadata lookup. The `Location.spec.geoLookup.attributes` map can include CoreDNS GeoIP metadata such as `geoip/continent/code` with a weight of `1000` for the matching continent values. The special `default` attribute always matches for an eligible location, regardless of request metadata, and adds its weight to that location's score. Use it to give a location a baseline score while still allowing matching geo attributes to add to its score.
 
 See: [examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml](examples/dnsendpoint-routing/geolocation/geolocation-dnsendpoint.yaml)
 
@@ -201,6 +201,8 @@ spec:
   geoLookup:
     weight: 100
     attributes:
+      default:
+        weight: 1
       geoip/continent/code:
         weight: 1000
         values:

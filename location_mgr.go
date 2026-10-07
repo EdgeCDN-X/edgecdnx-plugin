@@ -296,11 +296,23 @@ func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *me
 		}
 
 		for attrName, attribute := range location.Spec.GeoLookup.Attributes {
+			if attrName == "default" {
+				log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s - weight %d", attrName, "default", locationName, attribute.Weight))
+				currScore, ok := locationScore[locationName]
+				if !ok {
+					currScore = 0
+				}
+				if currScore+attribute.Weight > maxValue {
+					maxValue = currScore + attribute.Weight
+				}
+				locationScore[locationName] = currScore + attribute.Weight
+			}
+
 			if lookupFunc := metadata.ValueFunc(ctx, attrName); lookupFunc != nil {
 				if lookupValue := lookupFunc(); lookupValue != "" {
 					for _, attributeValue := range attribute.Values {
 						if attributeValue.Value == lookupValue {
-							log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s", attrName, lookupValue, locationName))
+							log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s - weight %d", attrName, lookupValue, locationName, attribute.Weight))
 
 							currScore, ok := locationScore[locationName]
 							if !ok {
