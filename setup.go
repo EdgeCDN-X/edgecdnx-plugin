@@ -22,9 +22,7 @@ import (
 )
 
 type NSRecord struct {
-	Name string
-	IPv4 string
-	IPv6 string
+	Target string
 }
 
 func parseResponseType(raw string) (ResponseType, error) {
@@ -76,11 +74,10 @@ func setup(c *caddy.Controller) error {
 			soa = args[0]
 		}
 		if val == "ns" {
-			if len(args) != 2 {
-				return plugin.Error("edgecdnx", fmt.Errorf("expected 2 arguments for ns, got %d", len(args)))
+			if len(args) != 1 {
+				return plugin.Error("edgecdnx", fmt.Errorf("expected 1 argument for ns, got %d", len(args)))
 			}
-			// TODO support for IPv6
-			ns = append(ns, NSRecord{Name: args[0], IPv4: args[1]})
+			ns = append(ns, NSRecord{Target: args[0]})
 		}
 		if val == "recordttl" {
 			raw, err := strconv.Atoi(args[0])

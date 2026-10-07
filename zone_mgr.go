@@ -41,7 +41,7 @@ func buildZoneRecords(zone infrastructurev1alpha1.Zone, soaRec string, ns []NSRe
 
 	serial := time.Now().Format("20060102") + "00"
 	// Create SOA Record
-	soa, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n@ IN SOA %s.%s %s %s 7200 3600 1209600 3600", zoneNormalized, soaRec, zoneNormalized, zone.Spec.Email, serial))
+	soa, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n@ IN SOA %s %s %s 7200 3600 1209600 3600", zoneNormalized, soaRec, zone.Spec.Email, serial))
 	if err != nil {
 		log.Errorf("edgecdnx: failed to create SOA record: %v", err)
 		return nil, err
@@ -51,22 +51,13 @@ func buildZoneRecords(zone infrastructurev1alpha1.Zone, soaRec string, ns []NSRe
 
 	// Allowed in this block lets continue
 	for _, n := range ns {
-		re, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n@ IN NS %s\n", zoneNormalized, n.Name))
+		re, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n@ IN NS %s\n", zoneNormalized, n.Target))
 		if err != nil {
 			log.Errorf("edgecdnx: failed to create NS record: %v", err)
 			return nil, err
 		}
 		recordList = append(recordList, re)
 		log.Debugf("edgecdnx: Crafted NS record for zone %s: %s", zoneNormalized, re.String())
-
-		re, err = dns.NewRR(fmt.Sprintf("$ORIGIN %s\n%s IN A %s", zoneNormalized, n.Name, n.IPv4))
-		if err != nil {
-			log.Errorf("edgecdnx: failed to create NS A record: %v", err)
-			return nil, err
-		}
-		recordList = append(recordList, re)
-
-		log.Debugf("edgecdnx: Crafted NS A record for zone %s: %s", zoneNormalized, re.String())
 	}
 
 	return recordList, nil

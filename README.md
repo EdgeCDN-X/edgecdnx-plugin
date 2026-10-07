@@ -314,9 +314,9 @@ Syntax:
 ```txt
 edgecdnx [ZONES...] {
   namespace <k8s-namespace>
-  soa <primary-nameserver-label>
-  ns <ns-hostname> <ipv4>
-  ns <ns-hostname> <ipv4>
+  soa <primary-nameserver>
+  ns <ns-hostname>
+  ns <ns-hostname>
   recordttl <seconds>
   dnsresponsetype <CNAME|A_AAAA>
   grpcresponsetype <CNAME|A_AAAA>
@@ -328,8 +328,8 @@ Directives:
 | Directive | Required | Default | Description |
 | --- | --- | --- | --- |
 | `namespace` | Yes | none | Kubernetes namespace to watch for EdgeCDN-X CRDs. |
-| `soa` | Yes | none | SOA MNAME label prefix used when crafting SOA records (`<soa>.<zone>`). |
-| `ns` | Recommended (repeatable) | empty | Adds NS and NS A records for each served zone. Format: `ns <hostname> <ipv4>`. |
+| `soa` | Yes | none | SOA MNAME used when crafting SOA records. A name without a trailing dot is relative to each zone; a trailing-dot name is absolute. |
+| `ns` | Recommended (repeatable) | empty | Adds an NS record for each served zone. Format: `ns <hostname>`. No glue A records are generated. |
 | `recordttl` | No | `60` | Fallback TTL for generated node answers when a DNSEndpoint does not specify one. |
 | `dnsresponsetype` | No | `A_AAAA` | Allowed values: `CNAME`, `A_AAAA`. Used for normal DNS-originated dynamic responses. |
 | `grpcresponsetype` | No | `CNAME` | Allowed values: `CNAME`, `A_AAAA`. Parsed and stored in plugin state. |
@@ -353,8 +353,8 @@ Example:
   edgecdnx . {
     namespace edgecdnx
     soa ns1
-    ns ns1.edge.example.com. 203.0.113.10
-    ns ns2.edge.example.com. 203.0.113.11
+    ns ns1.edge.example.com.
+    ns ns2.edge.example.com.
     recordttl 60
     dnsresponsetype A_AAAA
     grpcresponsetype CNAME
@@ -440,7 +440,7 @@ At present, the counter is declared but not incremented in request handling code
 - Validate required directives are set with arguments:
   - `namespace`
   - `soa`
-- Check each `ns` line has exactly 2 arguments.
+- Check each `ns` line has exactly 1 argument (the nameserver hostname).
 - Check `recordttl` is an integer.
 - Check response type values are one of `CNAME`, `A_AAAA`.
 
