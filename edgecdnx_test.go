@@ -3,8 +3,6 @@ package edgecdnxplugin
 import (
 	"context"
 	"net"
-	"sync"
-	"sync/atomic"
 	"testing"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
@@ -33,12 +31,7 @@ func TestServeDNSSimpleEndpointReturnsTargets(t *testing.T) {
 			Targets:       []string{"192.0.2.1", "192.0.2.2"},
 		},
 	}
-	manager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType): dnsEndpoint,
-		},
-	}
+	manager := newTestDNSEndpointManager(dnsEndpoint)
 	plugin := EdgeCDNX{DNSEndpointManager: manager}
 	request := new(dns.Msg)
 	request.SetQuestion("example.com.", dns.TypeA)
@@ -80,12 +73,7 @@ func TestServeDNSSimpleEndpointReturnsTXTTargets(t *testing.T) {
 			Targets:       []string{`"verification=value"`},
 		},
 	}
-	manager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType): dnsEndpoint,
-		},
-	}
+	manager := newTestDNSEndpointManager(dnsEndpoint)
 	plugin := EdgeCDNX{DNSEndpointManager: manager}
 	request := new(dns.Msg)
 	request.SetQuestion("example.com.", dns.TypeTXT)
@@ -124,12 +112,7 @@ func TestServeDNSGeolocationEndpointUsesPrefixRoutingAndSelector(t *testing.T) {
 			RouteSelector: routeSelector,
 		},
 	}
-	dnsEndpointManager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType): dnsEndpoint,
-		},
-	}
+	dnsEndpointManager := newTestDNSEndpointManager(dnsEndpoint)
 	prefixManager := newTestPrefixListRoutingManager()
 	addTestPrefixRoute(t, prefixManager, map[string]string{"tenant": "acme"}, "198.51.100.0/24", "edge-location")
 
@@ -185,14 +168,7 @@ func TestServeDNSRoundRobinEndpointCyclesThroughLocations(t *testing.T) {
 			RouteSelector: routeSelector,
 		},
 	}
-	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-	dnsEndpointManager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			key: dnsEndpoint,
-		},
-		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
-	}
+	dnsEndpointManager := newTestDNSEndpointManager(dnsEndpoint)
 
 	locA := newTestLocation("loc-a", map[string]string{"tenant": "acme"}, "", "node-a")
 	locA.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
@@ -260,14 +236,7 @@ func TestServeDNSRoundRobinEndpointFallsThroughWhenNoLocationsMatch(t *testing.T
 			RouteSelector: routeSelector,
 		},
 	}
-	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-	dnsEndpointManager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			key: dnsEndpoint,
-		},
-		roundRobinCounters: map[string]*atomic.Uint32{key: {}},
-	}
+	dnsEndpointManager := newTestDNSEndpointManager(dnsEndpoint)
 
 	locationManager := newTestLocationManager(t)
 
@@ -288,6 +257,38 @@ func TestServeDNSRoundRobinEndpointFallsThroughWhenNoLocationsMatch(t *testing.T
 	}
 }
 
+func TestServeDNSWeightedEndpointUsesEntryState(t *testing.T) {
+	manager := newTestDNSEndpointManager(infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "weighted"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "example.com", RecordType: "A", RoutingPolicy: "Weighted",
+		},
+	})
+	manager.Sync = nil
+	locationManager := newTestLocationManager(t)
+	for i, name := range []string{"loc-a", "loc-b"} {
+		location := newTestLocation(name, nil, "", "node")
+		location.Spec.Weight = int32(i + 1)
+		location.Spec.NodeGroups[0].Nodes[0].Ipv4 = []string{"192.0.2.1", "192.0.2.2"}[i]
+		locationManager.Locations[name] = location
+	}
+	plugin := EdgeCDNX{
+		DNSEndpointManager: manager,
+		LocationManager:    &locationManager,
+		DNSResponseType:    A_AAAA,
+	}
+	for _, want := range []string{"192.0.2.2", "192.0.2.1", "192.0.2.2", "192.0.2.2", "192.0.2.1", "192.0.2.2"} {
+		request := new(dns.Msg)
+		request.SetQuestion("example.com.", dns.TypeA)
+		writer := newCaptureResponseWriter()
+		rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+		if err != nil || rcode != dns.RcodeSuccess {
+			t.Fatalf("ServeDNS() = %d, %v", rcode, err)
+		}
+		assertFailoverAnswer(t, writer, want)
+	}
+}
+
 func TestServeDNSFailoverEndpointUsesPrimaryLocation(t *testing.T) {
 	plugin, endpointKey := newFailoverTestPlugin(t, false, false)
 	request := new(dns.Msg)
@@ -302,7 +303,7 @@ func TestServeDNSFailoverEndpointUsesPrimaryLocation(t *testing.T) {
 		t.Fatalf("ServeDNS() rcode = %d, want %d", rcode, dns.RcodeSuccess)
 	}
 	assertFailoverAnswer(t, writer, "192.0.2.1")
-	if endpointKey == "" {
+	if endpointKey.name == "" {
 		t.Fatal("failover endpoint key must not be empty")
 	}
 }
@@ -338,7 +339,7 @@ func TestServeDNSFailoverEndpointFailsWhenAllLocationsUnhealthy(t *testing.T) {
 	}
 }
 
-func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy bool) (EdgeCDNX, string) {
+func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy bool) (EdgeCDNX, endpointKey) {
 	t.Helper()
 	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
 	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
@@ -353,12 +354,7 @@ func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy boo
 		},
 	}
 	key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-	dnsEndpointManager := &DNSEndpointManager{
-		Sync: &sync.RWMutex{},
-		DNSEndpoints: map[string]infrastructurev1alpha1.DNSEndpoint{
-			key: dnsEndpoint,
-		},
-	}
+	dnsEndpointManager := newTestDNSEndpointManager(dnsEndpoint)
 
 	primary := newTestLocation("primary", map[string]string{"tenant": "acme"}, "", "primary-node")
 	primary.Spec.FallbackLocations = []string{"backup"}
@@ -377,13 +373,9 @@ func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy boo
 	locationManager.Config.RecrodTTL = 60
 
 	return EdgeCDNX{
-		DNSEndpointManager: &DNSEndpointManager{
-			Sync:               dnsEndpointManager.Sync,
-			DNSEndpoints:       dnsEndpointManager.DNSEndpoints,
-			roundRobinCounters: map[string]*atomic.Uint32{},
-		},
-		LocationManager: &locationManager,
-		DNSResponseType: A_AAAA,
+		DNSEndpointManager: dnsEndpointManager,
+		LocationManager:    &locationManager,
+		DNSResponseType:    A_AAAA,
 	}, key
 }
 
@@ -392,7 +384,8 @@ func setTestNodeHealth(location *infrastructurev1alpha1.Location, healthy bool) 
 	location.Status.NodeStatus = map[string]infrastructurev1alpha1.NodeInstanceStatus{
 		nodeName: {
 			Conditions: []infrastructurev1alpha1.NodeCondition{{
-				Type:   infrastructurev1alpha1.IPV4HealthCheckSuccessful,
+				Type:   infrastructurev1alpha1.HealthCheckSuccessful,
+				Stack:  infrastructurev1alpha1.StackTypeIPv4,
 				Status: healthy,
 			}},
 		},

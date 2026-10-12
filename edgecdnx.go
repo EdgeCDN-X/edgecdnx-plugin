@@ -136,7 +136,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	// Fetch DNS Endpoint first
-	dnsEndpoint, dnsEndpointErr := e.DNSEndpointManager.GetDNSEndpoint(qname, state.QType())
+	dnsEndpoint, dnsEndpointErr := e.DNSEndpointManager.getDNSEndpoint(qname, state.QType())
 
 	// Check if the query matches the node location endpoint pattern
 	if matches := nodeLocationEndpointPattern.FindStringSubmatch(qname); len(matches) == 4 && (state.QType() == dns.TypeA || state.QType() == dns.TypeAAAA) {
@@ -175,14 +175,14 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 		case "simple":
 			// Simple routing returns as is. No fallbacks
-			return e.BuildSimpleResponse(dnsEndpoint, w, r)
+			return e.BuildSimpleResponse(*dnsEndpoint.DNSEndpoint, w, r)
 		case "roundrobin":
 			locations := e.LocationManager.FindMatchingTargets(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
 			if len(locations) == 0 {
 				log.Debugf("edgecdnx: No matching locations found for roundrobin routing of DNSEndpoint %s", dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
-			targetIdx := e.DNSEndpointManager.GetNext(qname, state.QType(), len(locations))
+			targetIdx := dnsEndpoint.getNext(len(locations))
 			targetLocation = locations[targetIdx]
 		case "weighted":
 			locations := e.LocationManager.FindMatchingTargetsWithWeights(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
@@ -190,7 +190,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				log.Debugf("edgecdnx: No matching locations found for weighted routing of DNSEndpoint %s", dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
-			targetIdx := e.DNSEndpointManager.GetWeightedNext(qname, state.QType(), locations)
+			targetIdx := dnsEndpoint.getWeightedNext(locations)
 			targetLocation = locations[targetIdx].Name
 		case "failover":
 			// Selects Primary target. Primary target fails over to the next if unavailable
@@ -253,7 +253,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
 				if err == nil {
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 				}
 				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", parentLocation.Name, err))
 
@@ -275,7 +275,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
 				if err == nil {
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+					return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 				}
 				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
 			}
@@ -284,7 +284,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
-		return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(dnsEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
+		return e.BuildNodeReponse(node.Node, node.LocationName, responseType, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecrodTTL), w, r)
 	}
 
 	// Local Zone Handling

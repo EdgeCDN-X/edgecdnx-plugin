@@ -3,6 +3,7 @@ package edgecdnxplugin
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -25,12 +26,26 @@ type DNSEndpointManagerConfiguration struct {
 }
 
 type DNSEndpointManager struct {
-	fac                dynamicinformer.DynamicSharedInformerFactory
-	Informer           cache.SharedIndexInformer
-	Sync               *sync.RWMutex
-	DNSEndpoints       map[string]infrastructurev1alpha1.DNSEndpoint
-	roundRobinCounters map[string]*atomic.Uint32
-	weightedStates     map[string]*weightedRoundRobinState
+	fac       dynamicinformer.DynamicSharedInformerFactory
+	Informer  cache.SharedIndexInformer
+	Sync      *sync.RWMutex
+	endpoints atomic.Pointer[dnsEndpointSnapshot]
+}
+
+// Published snapshots and their endpoint configuration must never be mutated.
+type dnsEndpointSnapshot struct {
+	endpoints map[endpointKey]*dnsEndpointEntry
+}
+
+type endpointKey struct {
+	name  string
+	qtype uint16
+}
+
+type dnsEndpointEntry struct {
+	*infrastructurev1alpha1.DNSEndpoint
+	counter  *atomic.Uint32
+	weighted *weightedRoundRobinState
 }
 
 type weightedTarget struct {
@@ -45,8 +60,11 @@ type weightedRoundRobinState struct {
 	totalWeight int64
 }
 
-func dnsEndpointKey(dnsName string, recordType string) string {
-	return dns.Fqdn(strings.ToLower(dnsName)) + "/" + strings.ToUpper(recordType)
+func dnsEndpointKey(dnsName string, recordType string) endpointKey {
+	return endpointKey{
+		name:  dns.Fqdn(strings.ToLower(dnsName)),
+		qtype: dns.StringToType[strings.ToUpper(recordType)],
+	}
 }
 
 func isRoundRobinPolicy(routingPolicy string) bool {
@@ -57,17 +75,20 @@ func isRoundRobinPolicy(routingPolicy string) bool {
 // returns it modulo mod. If mod is 0, 0 is returned. If no counter exists (e.g. the DNSEndpoint
 // is not RoundRobin routed), 0 is returned.
 func (dm *DNSEndpointManager) GetNext(qname string, qtype uint16, mod int) int {
+	entry, err := dm.getDNSEndpoint(qname, qtype)
+	if err != nil {
+		return 0
+	}
+	return entry.getNext(mod)
+}
+
+func (entry *dnsEndpointEntry) getNext(mod int) int {
 	if mod == 0 {
 		return 0
 	}
 
-	recordType := dns.TypeToString[qtype]
-	key := dnsEndpointKey(qname, recordType)
-
-	dm.Sync.RLock()
-	counter, ok := dm.roundRobinCounters[key]
-	dm.Sync.RUnlock()
-	if !ok {
+	counter := entry.counter
+	if counter == nil {
 		return 0
 	}
 
@@ -82,34 +103,19 @@ func (dm *DNSEndpointManager) GetNext(qname string, qtype uint16, mod int) int {
 // GetWeightedNext selects a target using smooth weighted round robin. The current
 // weights are used as the scheduling quantum, so the target list is never expanded.
 func (dm *DNSEndpointManager) GetWeightedNext(qname string, qtype uint16, targets []weightedTarget) int {
+	entry, err := dm.getDNSEndpoint(qname, qtype)
+	if err != nil {
+		log.Errorf("edgecdnx: cannot select weighted target: %v", err)
+		return 0
+	}
+	return entry.getWeightedNext(targets)
+}
+
+func (entry *dnsEndpointEntry) getWeightedNext(targets []weightedTarget) int {
 	if len(targets) == 0 {
 		return 0
 	}
-
-	recordType := dns.TypeToString[qtype]
-	key := dnsEndpointKey(qname, recordType)
-
-	dm.Sync.RLock()
-	state, ok := dm.weightedStates[key]
-	if !ok {
-		// If no weighted state exists for this key, create one.
-		// Lock the map for writing to create the weighted state.
-		dm.Sync.RUnlock()
-		dm.Sync.Lock()
-		if dm.weightedStates == nil {
-			dm.weightedStates = make(map[string]*weightedRoundRobinState)
-		}
-		state, ok = dm.weightedStates[key]
-		if !ok {
-			state = &weightedRoundRobinState{}
-			dm.weightedStates[key] = state
-		}
-		dm.Sync.Unlock()
-		dm.Sync.RLock()
-	}
-	// Hold the map read lock while using state so DeleteFunc can't remove it from under us.
-	defer dm.Sync.RUnlock()
-
+	state := entry.weighted
 	state.Lock()
 	defer state.Unlock()
 
@@ -163,31 +169,63 @@ func sameWeightedTargets(left, right []weightedTarget) bool {
 	return true
 }
 
+// GetDNSEndpoint returns read-only configuration from the current snapshot.
+// Callers must not mutate its nested maps, slices, or pointers.
 func (dm *DNSEndpointManager) GetDNSEndpoint(qname string, qtype uint16) (infrastructurev1alpha1.DNSEndpoint, error) {
-	recordType := dns.TypeToString[qtype]
-	log.Debugf("edgecdnx: Looking up DNSEndpoint for %s %s", qname, recordType)
+	entry, err := dm.getDNSEndpoint(qname, qtype)
+	if err != nil {
+		return infrastructurev1alpha1.DNSEndpoint{}, err
+	}
+	return *entry.DNSEndpoint, nil
+}
 
-	dm.Sync.RLock()
-	defer dm.Sync.RUnlock()
-
-	if dnsEndpoint, ok := dm.DNSEndpoints[dnsEndpointKey(qname, recordType)]; ok {
-		return dnsEndpoint, nil
+func (dm *DNSEndpointManager) getDNSEndpoint(qname string, qtype uint16) (*dnsEndpointEntry, error) {
+	if log.D.Value() {
+		log.Debugf("edgecdnx: Looking up DNSEndpoint for %s %s", qname, dns.TypeToString[qtype])
+	}
+	key := endpointKey{name: dns.Fqdn(strings.ToLower(qname)), qtype: qtype}
+	if snapshot := dm.endpoints.Load(); snapshot != nil {
+		if dnsEndpoint, ok := snapshot.endpoints[key]; ok {
+			return dnsEndpoint, nil
+		}
 	}
 
-	if dnsEndpoint, ok := dm.DNSEndpoints[dnsEndpointKey(qname, "CNAME")]; ok {
-		return dnsEndpoint, nil
-	}
+	return nil, fmt.Errorf("DNSEndpoint not found for %s %s", qname, dns.TypeToString[qtype])
+}
 
-	return infrastructurev1alpha1.DNSEndpoint{}, fmt.Errorf("DNSEndpoint not found for %s %s", qname, recordType)
+// publishEndpoint requires Sync's write lock to serialize copy-on-write updates.
+// Readers may retain the old snapshot while a replacement is published.
+func (dm *DNSEndpointManager) publishEndpoint(oldKey endpointKey, endpoint *infrastructurev1alpha1.DNSEndpoint) {
+	endpoints := make(map[endpointKey]*dnsEndpointEntry)
+	if snapshot := dm.endpoints.Load(); snapshot != nil {
+		endpoints = maps.Clone(snapshot.endpoints)
+	}
+	previous := endpoints[oldKey]
+	delete(endpoints, oldKey)
+	if endpoint != nil {
+		key := dnsEndpointKey(endpoint.Spec.DNSName, endpoint.Spec.RecordType)
+		entry := &dnsEndpointEntry{
+			DNSEndpoint: endpoint.DeepCopy(),
+			weighted:    &weightedRoundRobinState{},
+		}
+		if isRoundRobinPolicy(endpoint.Spec.RoutingPolicy) {
+			entry.counter = &atomic.Uint32{}
+		}
+		if previous != nil && oldKey == key {
+			entry.weighted = previous.weighted
+			if entry.counter != nil && previous.counter != nil {
+				entry.counter = previous.counter
+			}
+		}
+		endpoints[key] = entry
+	}
+	dm.endpoints.Store(&dnsEndpointSnapshot{endpoints: endpoints})
 }
 
 func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory, config DNSEndpointManagerConfiguration) *DNSEndpointManager {
 	dm := &DNSEndpointManager{
-		fac:                factory,
-		Sync:               &sync.RWMutex{},
-		DNSEndpoints:       make(map[string]infrastructurev1alpha1.DNSEndpoint),
-		roundRobinCounters: make(map[string]*atomic.Uint32),
-		weightedStates:     make(map[string]*weightedRoundRobinState),
+		fac:  factory,
+		Sync: &sync.RWMutex{},
 	}
 
 	dnsEndpointInformer := factory.ForResource(schema.GroupVersionResource{
@@ -198,7 +236,14 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 	log.Infof("edgecdnx: Watching DNSEndpoints in namespace %s", config.Namespace)
 
-	dnsEndpointInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	dnsEndpointInformer.AddEventHandler(dm.endpointEventHandlers())
+	dm.Informer = dnsEndpointInformer
+
+	return dm
+}
+
+func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandlerFuncs {
+	return cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			dnsEndpoint, err := dnsEndpointFromObject(obj)
 			if err != nil {
@@ -208,11 +253,7 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-			dm.DNSEndpoints[key] = *dnsEndpoint
-			if isRoundRobinPolicy(dnsEndpoint.Spec.RoutingPolicy) {
-				dm.roundRobinCounters[key] = &atomic.Uint32{}
-			}
+			dm.publishEndpoint(endpointKey{}, dnsEndpoint)
 			log.Infof("edgecdnx: Added DNSEndpoint %s", dnsEndpoint.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
@@ -230,20 +271,7 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
 			oldKey := dnsEndpointKey(oldDNSEndpoint.Spec.DNSName, oldDNSEndpoint.Spec.RecordType)
-			newKey := dnsEndpointKey(newDNSEndpoint.Spec.DNSName, newDNSEndpoint.Spec.RecordType)
-			delete(dm.DNSEndpoints, oldKey)
-			dm.DNSEndpoints[newKey] = *newDNSEndpoint
-
-			if oldKey != newKey {
-				delete(dm.roundRobinCounters, oldKey)
-			}
-			if isRoundRobinPolicy(newDNSEndpoint.Spec.RoutingPolicy) {
-				if _, ok := dm.roundRobinCounters[newKey]; !ok {
-					dm.roundRobinCounters[newKey] = &atomic.Uint32{}
-				}
-			} else {
-				delete(dm.roundRobinCounters, newKey)
-			}
+			dm.publishEndpoint(oldKey, newDNSEndpoint)
 			log.Infof("edgecdnx: Updated DNSEndpoint %s", newDNSEndpoint.Name)
 		},
 		DeleteFunc: func(obj any) {
@@ -256,16 +284,10 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
 			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-			delete(dm.DNSEndpoints, key)
-			delete(dm.roundRobinCounters, key)
-			delete(dm.weightedStates, key)
+			dm.publishEndpoint(key, nil)
 			log.Infof("edgecdnx: Deleted DNSEndpoint %s", dnsEndpoint.Name)
 		},
-	})
-
-	dm.Informer = dnsEndpointInformer
-
-	return dm
+	}
 }
 
 func dnsEndpointFromObject(obj any) (*infrastructurev1alpha1.DNSEndpoint, error) {
@@ -286,6 +308,9 @@ func dnsEndpointFromObject(obj any) (*infrastructurev1alpha1.DNSEndpoint, error)
 	dnsEndpoint := &infrastructurev1alpha1.DNSEndpoint{}
 	if err := json.Unmarshal(encoded, dnsEndpoint); err != nil {
 		return nil, fmt.Errorf("unmarshal DNSEndpoint: %w", err)
+	}
+	if _, ok := dns.StringToType[strings.ToUpper(dnsEndpoint.Spec.RecordType)]; !ok {
+		return nil, fmt.Errorf("unsupported DNSEndpoint record type %q", dnsEndpoint.Spec.RecordType)
 	}
 
 	return dnsEndpoint, nil

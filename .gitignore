@@ -1,3 +1,12 @@
 coredns.tar.gz
 coredns-*
 config
+
+.DS_Store
+
+# Profiler-generated artifacts
+/Profiler/**/__pycache__/
+/Profiler/**/*.pyc
+/Profiler/profile-work/
+/Profiler/*.csv
+/Profiler/*.svg

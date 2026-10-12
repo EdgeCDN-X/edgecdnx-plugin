@@ -18,6 +18,19 @@ It supports:
 
 ## DNSEndpoint Types
 
+DNSEndpoint lookups use an atomically published, immutable map snapshot and do not
+acquire the manager's shared mutex. Informer add, update, and delete events
+serialize writes, copy the map, and publish the replacement. Each event costs
+O(number of endpoints); existing readers can finish using the previous snapshot.
+Lookup keys contain a normalized DNS name and numeric query type. The serving
+path retains the endpoint entry and selects directly through its scheduling
+state, without a second normalization, map lookup, or manager lock. Round-robin
+still uses an atomic counter; smooth weighted round robin uses an entry-local
+mutex. Same-key updates preserve scheduling progress; renamed or recreated
+endpoints start with fresh state. In-flight requests can finish with old entries.
+Endpoint configuration returned by the manager is read-only, including nested
+maps, slices, and pointers.
+
 The plugin implements the `DNSEndpoint` CRD routing modes and record types defined by the API schema:
 
 ### Routing policies
