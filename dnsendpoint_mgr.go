@@ -46,6 +46,36 @@ type dnsEndpointEntry struct {
 	*infrastructurev1alpha1.DNSEndpoint
 	counter  *atomic.Uint32
 	weighted *weightedRoundRobinState
+	targets  atomic.Pointer[endpointLocationTargets]
+	geo      atomic.Pointer[endpointGeoCandidates]
+	targetMu sync.Mutex
+}
+
+type endpointLocationTargets struct {
+	manager  *LocationManager
+	revision uint64
+	targets  []weightedTarget
+}
+
+// matchingLocationTargets returns an immutable slice tied to this entry's selector.
+func (entry *dnsEndpointEntry) matchingLocationTargets(manager *LocationManager) []weightedTarget {
+	revision := manager.revision.Load()
+	if cached := entry.targets.Load(); cached != nil && cached.manager == manager && cached.revision == revision {
+		return cached.targets
+	}
+
+	entry.targetMu.Lock()
+	defer entry.targetMu.Unlock()
+	manager.Sync.RLock()
+	defer manager.Sync.RUnlock()
+
+	revision = manager.revision.Load()
+	if cached := entry.targets.Load(); cached != nil && cached.manager == manager && cached.revision == revision {
+		return cached.targets
+	}
+	targets := manager.findMatchingTargetsWithWeightsLocked(entry.Spec.RouteSelector)
+	entry.targets.Store(&endpointLocationTargets{manager: manager, revision: revision, targets: targets})
+	return targets
 }
 
 type weightedTarget struct {

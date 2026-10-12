@@ -5,8 +5,8 @@ Each zone gets a random number of A, AAAA and CNAME records, bounded by the
 --min-records / --max-records options. By default the bounds apply per record
 type; with --total they apply to the total number of records per zone, randomly
 split between A, AAAA and CNAME.
-With --routing-policy Weighted, generate only A/AAAA endpoints, each with its own
-locations configured by --locations-per-endpoint and --location-weights.
+With --routing-policy Weighted or Geolocation, generate only A/AAAA endpoints,
+each with its own locations. Geolocation also exercises node-group selectors.
 
 Examples:
   # Print manifests for 10 zones, 1-20 records of each type per zone
@@ -24,6 +24,7 @@ Examples:
 
 import argparse
 import ipaddress
+import json
 import random
 import subprocess
 import sys
@@ -37,9 +38,9 @@ def add_wrr_options(parser):
     parser.add_argument("--location-weights", default="1,2,3",
                         help="Comma-separated weights, cycled across each endpoint's locations (default: 1,2,3)")
     parser.add_argument("--locations-per-endpoint", type=int,
-                        help="Locations per WRR endpoint (default: number of --location-weights)")
+                        help="Locations per dynamic endpoint (default: number of --location-weights)")
     parser.add_argument("--nodes-per-location", type=int, default=1,
-                        help="Dual-stack nodes per generated location (default: 1)")
+                        help="Dual-stack nodes per location (per group for Geolocation; default: 1)")
     parser.add_argument("--routing-instance", default="edgecdnx",
                         help="Routing-instance label on generated locations (default: edgecdnx)")
 
@@ -61,6 +62,27 @@ def validate_wrr_options(parser, args):
         parser.error("the weights used by each endpoint must include a positive weight")
     if args.nodes_per_location < 1:
         parser.error("--nodes-per-location must be >= 1")
+
+
+def add_geo_options(parser):
+    parser.add_argument("--node-groups-per-location", type=int, default=4,
+                        help="Node groups per GeoLookup location; only the last matches (default: 4)")
+    parser.add_argument("--geo-attribute", default="geoip/continent/code",
+                        help="Metadata attribute used for GeoLookup scoring (default: geoip/continent/code)")
+    parser.add_argument("--geo-values", default="EU,NA,AS",
+                        help="Comma-separated metadata values cycled across locations (default: EU,NA,AS)")
+
+
+def validate_geo_options(parser, args):
+    if args.node_groups_per_location < 1:
+        parser.error("--node-groups-per-location must be >= 1")
+    if any(weight > 1000 for weight in args.location_weights):
+        parser.error("Geolocation --location-weights must be in [0, 1000]")
+    if "/" not in args.geo_attribute or any(not part for part in args.geo_attribute.split("/")):
+        parser.error("--geo-attribute must be a metadata label such as geoip/continent/code")
+    args.geo_values = [value.strip() for value in args.geo_values.split(",")]
+    if not all(args.geo_values):
+        parser.error("--geo-values must be comma-separated nonempty values")
 
 # Documentation ranges (RFC 5737 / RFC 3849) so generated records never point at real hosts.
 IPV4_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
@@ -93,9 +115,10 @@ def parse_args():
     p.add_argument("--delete", action="store_true",
                    help=f"Delete all Zones/DNSEndpoints/Locations labelled {LABEL_KEY}=true and exit")
     p.add_argument("--context", help="kubectl context to use")
-    p.add_argument("--routing-policy", choices=("Simple", "Weighted"), default="Simple",
-                   help="Endpoint routing policy; Weighted also generates locations")
+    p.add_argument("--routing-policy", choices=("Simple", "Weighted", "Geolocation"), default="Simple",
+                   help="Endpoint routing policy; Weighted and Geolocation also generate locations")
     add_wrr_options(p)
+    add_geo_options(p)
     args = p.parse_args()
 
     if args.delete:
@@ -111,6 +134,8 @@ def parse_args():
     if args.apply and args.output:
         p.error("--apply and --output are mutually exclusive")
     validate_wrr_options(p, args)
+    if args.routing_policy == "Geolocation":
+        validate_geo_options(p, args)
     return args
 
 
@@ -158,7 +183,9 @@ def endpoint_manifest(name, namespace, zone_name, dns_name, record_type, ttl, ta
         f"  recordTTL: {ttl}\n"
         f"  recordType: {record_type}\n"
         + (f"  routeSelector:\n    matchLabels:\n      zone: {zone_name}\n      dnsendpoint: {name}\n"
-           if routing_policy == "Weighted" else "  targets:\n" + targets_yaml)
+           + ('      profiler.edgecdnx.com/node-group: "selected"\n'
+              if routing_policy == "Geolocation" else "")
+           if routing_policy in ("Weighted", "Geolocation") else "  targets:\n" + targets_yaml)
     )
 
 
@@ -194,8 +221,58 @@ def location_manifest(args, index, weight, zone_name, endpoint_name):
     )
 
 
+def geo_location_manifest(args, index, weight, zone_name, endpoint_name):
+    if len(zone_name) > 63 or len(endpoint_name) > 63:
+        raise ValueError("Geolocation zone and endpoint names must fit Kubernetes label values (63 characters)")
+    groups = []
+    for group in range(1, args.node_groups_per_location + 1):
+        selected = group == args.node_groups_per_location
+        group_label = "selected" if selected else "excluded"
+        nodes = "".join(
+            f"        - name: group-{group}-node-{node}\n"
+            f"          ipv4: {IPV4_NETS[0][1 + ((index - 1) * args.node_groups_per_location * args.nodes_per_location + (group - 1) * args.nodes_per_location + node - 1) % 254]}\n"
+            f"          ipv6: {IPV6_NET[(index - 1) * args.node_groups_per_location * args.nodes_per_location + (group - 1) * args.nodes_per_location + node]}\n"
+            for node in range(1, args.nodes_per_location + 1)
+        )
+        groups.append(
+            f"    - name: group-{group}\n"
+            '      flavor: ""\n'
+            "      labels:\n"
+            f'        profiler.edgecdnx.com/node-group: "{group_label}"\n'
+            "      nodes:\n"
+            + nodes
+        )
+    value = args.geo_values[(index - 1) % len(args.geo_values)]
+    return (
+        "---\n"
+        f"apiVersion: {API_VERSION}\n"
+        "kind: Location\n"
+        "metadata:\n"
+        f"  name: {endpoint_name}-geo-{index:04d}\n"
+        f"  namespace: {args.namespace}\n"
+        "  labels:\n"
+        f'    {LABEL_KEY}: "true"\n'
+        f"    zone: {zone_name}\n"
+        f"    dnsendpoint: {endpoint_name}\n"
+        f"    edgecdnx.com/routing-instance: {args.routing_instance}\n"
+        "spec:\n"
+        "  geoLookup:\n"
+        f"    weight: {weight}\n"
+        "    attributes:\n"
+        "      default:\n"
+        "        weight: 1\n"
+        f"      {json.dumps(args.geo_attribute)}:\n"
+        "        weight: 100\n"
+        "        values:\n"
+        f"          - value: {json.dumps(value)}\n"
+        f"            weight: {index}\n"
+        "  nodeGroups:\n"
+        + "".join(groups)
+    )
+
+
 def record_counts(args, rng):
-    types = ("A", "AAAA") if getattr(args, "routing_policy", "Simple") == "Weighted" else RECORD_TYPES
+    types = ("A", "AAAA") if getattr(args, "routing_policy", "Simple") in ("Weighted", "Geolocation") else RECORD_TYPES
     if not args.total:
         return {t: rng.randint(args.min_records, args.max_records) if t in types else 0
                 for t in RECORD_TYPES}
@@ -237,10 +314,11 @@ def generate(args, rng, stats, records=None, start=1):
                 if not emit:
                     continue
                 endpoint_name = f"{zone_label}-{host}"
-                if policy == "Weighted":
+                if policy in ("Weighted", "Geolocation"):
                     for index in range(1, args.locations_per_endpoint + 1):
                         weight = args.location_weights[(index - 1) % len(args.location_weights)]
-                        yield location_manifest(args, index, weight, zone, endpoint_name)
+                        manifest = geo_location_manifest if policy == "Geolocation" else location_manifest
+                        yield manifest(args, index, weight, zone, endpoint_name)
                         stats["locations"] = stats.get("locations", 0) + 1
                 yield endpoint_manifest(
                     endpoint_name, args.namespace, zone, fqdn, rtype, args.ttl, targets,

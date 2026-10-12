@@ -31,6 +31,33 @@ endpoints start with fresh state. In-flight requests can finish with old entries
 Endpoint configuration returned by the manager is read-only, including nested
 maps, slices, and pointers.
 
+RoundRobin and Weighted endpoints cache their sorted matching locations and
+weights on the internal endpoint entry. Warm target lookups use atomic loads,
+without scanning locations, compiling selectors, sorting, or allocating.
+Location add/delete events and changes to labels or spec advance a routing
+revision; each endpoint lazily rebuilds its cache on the next query. Status-only
+updates retain the cache, and health filtering still reads current location data.
+Endpoint updates create a fresh cache so selector changes take effect immediately.
+Concurrent cache misses for an entry share one rebuild. In-flight queries may
+finish with the previous target list while an update is being published.
+Weighted scheduling and health-aware node selection still have their existing
+costs; this cache optimizes target discovery, not the entire DNS query.
+
+Geolocation endpoints also cache eligible locations and compiled GeoLookup scoring
+data using the same routing revision. Eligibility requires at least one node group
+whose labels, merged over the location labels, match `routeSelector`. Locations
+without node groups remain ineligible, including for a nil selector. Warm queries
+do not merge labels or evaluate selectors for GeoLookup eligibility, and read each
+required metadata value once per request. Scores and the winning location are not
+cached: each request scores the eligible candidates and randomly breaks ties using
+`geoLookup.weight`. Zero-weight locations are excluded from weighted ties when
+positive weights exist; all-zero ties choose uniformly.
+Scoring compares final totals, including value-specific weights and negative
+modifiers, rather than intermediate totals. A `default` attribute contributes
+without metadata; other attributes require a nonempty matching metadata value.
+Node-group targeting within the selected location remains supported, and node
+selection still evaluates the selector and current health data.
+
 The plugin implements the `DNSEndpoint` CRD routing modes and record types defined by the API schema:
 
 ### Routing policies

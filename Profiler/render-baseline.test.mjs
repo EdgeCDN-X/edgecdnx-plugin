@@ -62,11 +62,12 @@ test('grows the table for more measurements and suppresses crowded point labels'
   assert.ok(!svg.includes('class="label"'));
 });
 
-test('renders Simple, shared WRR and per-endpoint WRR profiler CSVs', () => {
+test('renders Simple, WRR and GeoLookup profiler CSVs', () => {
   const fixtures = [
     ['simple.csv', source],
     ['wrr-per-endpoint.csv', `${header},locations,locations_per_endpoint,location_weights,nodes_per_location\n10,159,2458.79,40.512,533.839,1590,10,"1,2,3",1`],
     ['wrr-shared.csv', `${header},locations,location_weights,nodes_per_location\n10,15,100,1,2,3,"1,2,3",1`],
+    ['geo.csv', `${header},locations,locations_per_endpoint,location_weights,nodes_per_location,node_groups_per_location,geo_attribute,geo_values,ecs_us_subnet,ecs_eu_subnet\n10,15,100,1,2,150,10,"1,2,3",2,4,geoip/continent/code,"EU,NA,AS",24.0.0.0/24,80.156.0.0/24`],
   ];
   for (const [file, csv] of fixtures) {
     const rows = parseCSV(csv);
@@ -78,14 +79,39 @@ test('renders Simple, shared WRR and per-endpoint WRR profiler CSVs', () => {
       assert.ok(svg.includes('10 locations/endpoint'));
       assert.ok(svg.includes('1,2,3 location weights'));
     }
+    if (file === 'geo.csv') {
+      assert.ok(svg.includes('Locations'));
+      assert.ok(svg.includes('4 node groups/location'));
+      assert.ok(svg.includes('2 nodes/group'));
+      assert.ok(svg.includes('geoip/continent/code geo attribute'));
+      assert.ok(svg.includes('EU,NA,AS geo values'));
+      assert.ok(svg.includes('24.0.0.0/24 US ECS block'));
+      assert.ok(svg.includes('80.156.0.0/24 EU ECS block'));
+    }
   }
 });
 
 test('validates optional location counts', () => {
-  for (const column of ['locations', 'locations_per_endpoint', 'nodes_per_location']) {
+  for (const column of ['locations', 'locations_per_endpoint', 'nodes_per_location', 'node_groups_per_location']) {
     for (const value of ['', '-1', '1.5', 'Infinity']) {
       assert.throws(() => parseCSV(`${header},${column}\n10,15,100,1,2,${value}`), /invalid/);
     }
+  }
+});
+
+test('identifies the benchmark in visible and accessible titles', () => {
+  for (const [file, columns, values, title] of [
+    ['simple-baseline.csv', '', '', 'Simple routing'],
+    ['wrr-results.csv', '', '', 'Weighted Round Robin (WRR)'],
+    ['geo-results.csv', '', '', 'GeoLookup'],
+    ['renamed.csv', ',location_weights', ',"1,2,3"', 'Weighted Round Robin (WRR)'],
+    ['wrr-results.csv', ',geo_attribute', ',geoip/continent/code', 'GeoLookup'],
+    ['renamed.csv', ',geo_attribute,ecs_us_subnet', ',geoip/continent/code,24.0.0.0/24', 'GeoLookup (EDNS0 ECS)'],
+    ['unknown.csv', '', '', 'DNS benchmark'],
+  ]) {
+    const svg = renderSVG(parseCSV(`${header}${columns}\n10,15,100,1,2${values}`), file);
+    assert.ok(svg.includes(`<title id="title">${title}: throughput and query duration by zone count</title>`));
+    assert.ok(svg.includes(`>${title}: scale vs. query performance</text>`));
   }
 });
 

@@ -16,10 +16,12 @@ Example:
 
 import argparse
 import csv
+import ipaddress
 import os
 import random
 import re
 import subprocess
+import struct
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -41,8 +43,8 @@ CSV_FIELDS = [
 
 def parse_args(routing_policy="Simple"):
     description = __doc__ if routing_policy == "Simple" else (
-        "Benchmark Weighted A/AAAA endpoints as zones, records and endpoint-specific "
-        "weighted locations grow. Deletes profiler-labelled resources "
+        f"Benchmark {routing_policy} A/AAAA endpoints as zones, records and endpoint-specific "
+        "locations grow. Deletes profiler-labelled resources "
         "before and after each run unless --no-cleanup-before or --keep is supplied."
     )
     p = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -54,8 +56,8 @@ def parse_args(routing_policy="Simple"):
     p.add_argument("-s", "--server", default="127.0.0.1", help="DNS server (default: 127.0.0.1)")
     p.add_argument("-p", "--port", type=int, default=5553, help="DNS port (default: 5553)")
     p.add_argument("--duration", type=int, default=30, help="dnsperf run time per step in seconds (default: 30)")
-    p.add_argument("--qps", type=int, default=5000,
-                   help="dnsperf QPS limit; keep it constant so latencies are comparable, 0 = unlimited (default: 5000)")
+    p.add_argument("--qps", type=int, default=0,
+                   help="dnsperf QPS limit; keep it constant so latencies are comparable, 0 = unlimited (default: 0)")
     p.add_argument("--clients", type=int, default=10, help="dnsperf clients (default: 10)")
     p.add_argument("--sync-timeout", type=int, default=600,
                    help="Max seconds to wait for the plugin to serve new records (default: 600)")
@@ -64,15 +66,22 @@ def parse_args(routing_policy="Simple"):
     p.add_argument("--apply-workers", type=int, default=8, help="Parallel kubectl apply processes (default: 8)")
     p.add_argument("--chunk-size", type=int, default=500, help="Manifests per kubectl apply (default: 500)")
     p.add_argument("--seed", type=int, default=1, help="Random seed (default: 1)")
-    default_output = "wrr-results.csv" if routing_policy == "Weighted" else "profile-results.csv"
-    default_workdir = "profile-work/wrr" if routing_policy == "Weighted" else "profile-work"
+    suite = {"Simple": None, "Weighted": "wrr", "Geolocation": "geo"}[routing_policy]
+    default_output = f"{suite}-results.csv" if suite else "profile-results.csv"
+    default_workdir = f"profile-work/{suite}" if suite else "profile-work"
     p.add_argument("-o", "--output", default=default_output, help=f"CSV file, appended to (default: {default_output})")
     p.add_argument("--workdir", default=default_workdir, help=f"Query files and dnsperf logs (default: {default_workdir})")
     p.add_argument("--coredns-pid", type=int, help="CoreDNS PID for RSS tracking (default: auto-detect listener on --port)")
     p.add_argument("--no-cleanup-before", action="store_true", help="Do not delete previously generated resources first")
     p.add_argument("--keep", action="store_true", help="Keep generated resources after the run")
-    if routing_policy == "Weighted":
+    if routing_policy in ("Weighted", "Geolocation"):
         gz.add_wrr_options(p)
+    if routing_policy == "Geolocation":
+        gz.add_geo_options(p)
+        p.add_argument("--ecs-us-subnet", default="24.0.0.0/24",
+                       help="IPv4 block for random US ECS clients (default: 24.0.0.0/24)")
+        p.add_argument("--ecs-eu-subnet", default="80.156.0.0/24",
+                       help="IPv4 block for random EU ECS clients (default: 80.156.0.0/24)")
     args = p.parse_args()
 
     args.steps = [int(x) for x in args.steps.split(",") if x.strip()]
@@ -87,8 +96,18 @@ def parse_args(routing_policy="Simple"):
     if args.duration < 1 or args.sync_timeout < 1 or args.qps < 0:
         p.error("--duration and --sync-timeout must be >= 1, and --qps must be >= 0")
     args.routing_policy = routing_policy
-    if routing_policy == "Weighted":
+    if routing_policy in ("Weighted", "Geolocation"):
         gz.validate_wrr_options(p, args)
+    if routing_policy == "Geolocation":
+        gz.validate_geo_options(p, args)
+        for option in ("ecs_us_subnet", "ecs_eu_subnet"):
+            try:
+                subnet = ipaddress.IPv4Network(getattr(args, option), strict=True)
+            except ValueError as error:
+                p.error(f"--{option.replace('_', '-')} must be an IPv4 network: {error}")
+            if not subnet.is_global:
+                p.error(f"--{option.replace('_', '-')} must be a public IPv4 network")
+            setattr(args, option, subnet)
     return args
 
 
@@ -110,12 +129,15 @@ def gen_args(args, zones):
         locations_per_endpoint=getattr(args, "locations_per_endpoint", 0),
         nodes_per_location=getattr(args, "nodes_per_location", 1),
         routing_instance=getattr(args, "routing_instance", "edgecdnx"),
+        node_groups_per_location=getattr(args, "node_groups_per_location", 1),
+        geo_attribute=getattr(args, "geo_attribute", "geoip/continent/code"),
+        geo_values=getattr(args, "geo_values", ["EU", "NA", "AS"]),
     )
 
 
 def cleanup(args):
     log("Deleting previously generated resources ...")
-    kinds = "dnsendpoints,zones,locations" if args.routing_policy == "Weighted" else "dnsendpoints,zones"
+    kinds = "dnsendpoints,zones,locations" if args.routing_policy in ("Weighted", "Geolocation") else "dnsendpoints,zones"
     for kind in kinds.split(","):
         subprocess.run(
             kubectl_cmd(args) + ["delete", kind, "-n", args.namespace, "-l", f"{gz.LABEL_KEY}=true",
@@ -154,7 +176,43 @@ def apply_manifests(args, docs):
 
 def dnsperf_cmd(args, query_file, extra):
     return ["dnsperf", "-s", args.server, "-p", str(args.port), "-d", query_file,
-            "-O", "suppress=timeout,unexpected"] + extra
+            "-O", "suppress=timeout,unexpected"] + (
+                ["-B"] if getattr(args, "routing_policy", "Simple") == "Geolocation" else []
+            ) + extra
+
+
+def ecs_query(name, record_type, address):
+    """Encode a DNS query with EDNS0 Client Subnet (IPv4 /32, scope /0)."""
+    labels = name.rstrip(".").encode("idna").split(b".")
+    if any(not label or len(label) > 63 for label in labels):
+        raise ValueError(f"Invalid DNS name: {name}")
+    qname = b"".join(bytes([len(label)]) + label for label in labels) + b"\0"
+    if len(qname) > 255:
+        raise ValueError(f"DNS name exceeds 255 wire bytes: {name}")
+    qtype = {"A": 1, "AAAA": 28}[record_type]
+    question = qname + struct.pack("!HH", qtype, 1)
+    subnet = struct.pack("!HBB", 1, 32, 0) + ipaddress.IPv4Address(address).packed
+    option = struct.pack("!HH", 8, len(subnet)) + subnet
+    opt = b"\0" + struct.pack("!HHIH", 41, 1232, 0, len(option)) + option
+    packet = struct.pack("!HHHHHH", 0, 0x0100, 1, 0, 0, 1) + question + opt
+    return struct.pack("!H", len(packet)) + packet
+
+
+def write_geo_queries(args, sample, query_file, rng):
+    """Write per-query ECS packets and an auditable text companion."""
+    subnets = (("US", args.ecs_us_subnet), ("EU", args.ecs_eu_subnet))
+    count = 0
+    with open(query_file, "wb") as binary, open(query_file + ".csv", "w", newline="") as companion:
+        writer = csv.writer(companion)
+        writer.writerow(["name", "record_type", "region", "ecs_address", "ecs_prefix_length"])
+        for name, record_type in sample:
+            for region, subnet in subnets:
+                low, high = (1, subnet.num_addresses - 2) if subnet.num_addresses > 2 else (0, subnet.num_addresses - 1)
+                address = subnet.network_address + rng.randint(low, high)
+                binary.write(ecs_query(name, record_type, address))
+                writer.writerow([name, record_type, region, str(address), 32])
+                count += 1
+    return count
 
 
 def wait_for_sync(args, query_file, expected):
@@ -245,11 +303,15 @@ def main(routing_policy="Simple"):
 
     write_header = not os.path.exists(args.output) or os.path.getsize(args.output) == 0
     sample_rng = random.Random(args.seed + 1)
+    ecs_rng = random.Random(args.seed + 2)
     all_records = []
     totals = {"zones": 0, "locations": 0, **{t: 0 for t in gz.RECORD_TYPES}}
     fields = CSV_FIELDS
-    if routing_policy == "Weighted":
+    if routing_policy in ("Weighted", "Geolocation"):
         fields = CSV_FIELDS + ["locations", "locations_per_endpoint", "location_weights", "nodes_per_location"]
+    if routing_policy == "Geolocation":
+        fields = fields + ["node_groups_per_location", "geo_attribute", "geo_values",
+                           "ecs_us_subnet", "ecs_eu_subnet"]
     applied = 0
 
     try:
@@ -272,7 +334,7 @@ def main(routing_policy="Simple"):
                     totals[k] += stats[k]
                 log(f"Applying {len(docs)} new manifests ({stats['zones']} zones)")
                 t0 = time.monotonic()
-                if routing_policy == "Weighted":
+                if routing_policy in ("Weighted", "Geolocation"):
                     location_docs = [doc for doc in docs if "\nkind: Location\n" in doc]
                     apply_manifests(args, location_docs)
                     docs = [doc for doc in docs if "\nkind: Location\n" not in doc]
@@ -281,13 +343,19 @@ def main(routing_policy="Simple"):
                 applied = zones
 
                 sample = sample_rng.sample(all_records, max(1, round(len(all_records) * args.sample)))
-                query_file = os.path.join(args.workdir, f"queries-{zones}.txt")
-                with open(query_file, "w") as qf:
-                    qf.writelines(f"{name} {rtype}\n" for name, rtype in sample)
+                if routing_policy == "Geolocation":
+                    query_file = os.path.join(args.workdir, f"queries-{zones}.bin")
+                    sampled_queries = write_geo_queries(args, sample, query_file, ecs_rng)
+                    log(f"ECS /32 clients from US {args.ecs_us_subnet} and EU {args.ecs_eu_subnet}")
+                else:
+                    query_file = os.path.join(args.workdir, f"queries-{zones}.txt")
+                    with open(query_file, "w") as qf:
+                        qf.writelines(f"{name} {rtype}\n" for name, rtype in sample)
+                    sampled_queries = len(sample)
 
-                log(f"Waiting for plugin to serve {len(sample)} sampled records")
+                log(f"Waiting for plugin to serve {sampled_queries} sampled queries")
                 t0 = time.monotonic()
-                wait_for_sync(args, query_file, len(sample))
+                wait_for_sync(args, query_file, sampled_queries)
                 sync_s = round(time.monotonic() - t0, 2)
 
                 extra = ["-l", str(args.duration), "-c", str(args.clients), "-O", "latency-histogram"]
@@ -310,17 +378,23 @@ def main(routing_policy="Simple"):
                     "zones": totals["zones"],
                     "records": len(all_records),
                     "a_records": totals["A"], "aaaa_records": totals["AAAA"], "cname_records": totals["CNAME"],
-                    "sampled_queries": len(sample),
+                    "sampled_queries": sampled_queries,
                     "apply_seconds": apply_s, "sync_seconds": sync_s,
                     "duration_s": args.duration, "qps_limit": args.qps or "unlimited", "clients": args.clients,
                     "coredns_rss_mb": rss_mb(pid),
                     **measurements,
                 }
-                if routing_policy == "Weighted":
+                if routing_policy in ("Weighted", "Geolocation"):
                     row.update(locations=totals["locations"],
                                locations_per_endpoint=args.locations_per_endpoint,
                                location_weights=",".join(map(str, args.location_weights)),
                                nodes_per_location=args.nodes_per_location)
+                if routing_policy == "Geolocation":
+                    row.update(node_groups_per_location=args.node_groups_per_location,
+                               geo_attribute=args.geo_attribute,
+                               geo_values=",".join(args.geo_values),
+                               ecs_us_subnet=str(args.ecs_us_subnet),
+                               ecs_eu_subnet=str(args.ecs_eu_subnet))
                 writer.writerow(row)
                 fh.flush()
                 log(f"zones={row['zones']} records={row['records']} locations={totals['locations']} "

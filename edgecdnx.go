@@ -177,15 +177,15 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			// Simple routing returns as is. No fallbacks
 			return e.BuildSimpleResponse(*dnsEndpoint.DNSEndpoint, w, r)
 		case "roundrobin":
-			locations := e.LocationManager.FindMatchingTargets(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+			locations := dnsEndpoint.matchingLocationTargets(e.LocationManager)
 			if len(locations) == 0 {
 				log.Debugf("edgecdnx: No matching locations found for roundrobin routing of DNSEndpoint %s", dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 			targetIdx := dnsEndpoint.getNext(len(locations))
-			targetLocation = locations[targetIdx]
+			targetLocation = locations[targetIdx].Name
 		case "weighted":
-			locations := e.LocationManager.FindMatchingTargetsWithWeights(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+			locations := dnsEndpoint.matchingLocationTargets(e.LocationManager)
 			if len(locations) == 0 {
 				log.Debugf("edgecdnx: No matching locations found for weighted routing of DNSEndpoint %s", dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
@@ -204,7 +204,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			prefixRouted, matchedLocation := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)
 
 			if !prefixRouted {
-				geoLookupLocation, geoLookupErr := e.LocationManager.PerformGeoLookup(ctx, dnsEndpoint.Spec.RouteSelector, dnsEndpoint.Name)
+				geoLookupLocation, geoLookupErr := dnsEndpoint.matchingGeoCandidates(e.LocationManager).lookup(ctx)
 				if geoLookupErr != nil {
 					log.Errorf("edgecdnx: GeoLookup failed: %v", geoLookupErr)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)

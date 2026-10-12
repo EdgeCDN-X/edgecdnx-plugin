@@ -4,14 +4,14 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
-	"math/rand/v2"
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -19,7 +19,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
-	"github.com/coredns/coredns/plugin/metadata"
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/miekg/dns"
 )
@@ -35,6 +34,7 @@ type LocationManager struct {
 	Sync      *sync.RWMutex
 	Locations map[string]infrastructurev1alpha1.Location
 	Config    LocationManagerConfiguration
+	revision  atomic.Uint64
 }
 
 type HashFilters struct {
@@ -66,7 +66,7 @@ func matchesLabelSelector(objectLabels map[string]string, selector *metav1.Label
 	return labelSelector.Matches(labels.Set(objectLabels))
 }
 
-func (l LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.Location, error) {
+func (l *LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.Location, error) {
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
@@ -78,7 +78,7 @@ func (l LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.
 	return location, nil
 }
 
-func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, hashInput string, filters HashFilters) (FilteredNodeWithMeta, error) {
+func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, hashInput string, filters HashFilters) (FilteredNodeWithMeta, error) {
 	filteredNodes := make([]FilteredNodeWithMeta, 0)
 
 	if location.Spec.MaintenanceMode {
@@ -251,7 +251,7 @@ func (l LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, ha
 	}
 }
 
-func (l LocationManager) FindMatchingTargets(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []string {
+func (l *LocationManager) FindMatchingTargets(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []string {
 	weightedLocations := l.FindMatchingTargetsWithWeights(ctx, routeSelector, endpointName)
 	locations := make([]string, 0, len(weightedLocations))
 	for _, location := range weightedLocations {
@@ -260,14 +260,19 @@ func (l LocationManager) FindMatchingTargets(ctx context.Context, routeSelector 
 	return locations
 }
 
-func (l LocationManager) FindMatchingTargetsWithWeights(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []weightedTarget {
-	locations := make([]weightedTarget, 0)
-
+func (l *LocationManager) FindMatchingTargetsWithWeights(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) []weightedTarget {
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
+	return l.findMatchingTargetsWithWeightsLocked(routeSelector)
+}
+
+func (l *LocationManager) findMatchingTargetsWithWeightsLocked(routeSelector *metav1.LabelSelector) []weightedTarget {
+	locations := make([]weightedTarget, 0)
+	selector := compileRouteSelector(routeSelector)
+
 	for locationName, location := range l.Locations {
-		if matchesLabelSelector(location.Labels, routeSelector) {
+		if selector.Matches(labels.Set(location.Labels)) {
 			locations = append(locations, weightedTarget{Name: locationName, Weight: location.Spec.Weight})
 		}
 	}
@@ -278,96 +283,14 @@ func (l LocationManager) FindMatchingTargetsWithWeights(ctx context.Context, rou
 	return locations
 }
 
-func (l LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) (string, error) {
-	maxValue := 0
-	locationScore := make(map[string]int)
-
+func (l *LocationManager) PerformGeoLookup(ctx context.Context, routeSelector *metav1.LabelSelector, endpointName string) (string, error) {
 	l.Sync.RLock()
-	defer l.Sync.RUnlock()
-
-	for locationName, location := range l.Locations {
-		if !slices.ContainsFunc(location.Spec.NodeGroups, func(ng infrastructurev1alpha1.NodeGroupSpec) bool {
-			fullLabels := make(map[string]string)
-			maps.Copy(fullLabels, location.Labels)
-			maps.Copy(fullLabels, ng.Labels)
-			return matchesLabelSelector(fullLabels, routeSelector)
-		}) {
-			continue
-		}
-
-		for attrName, attribute := range location.Spec.GeoLookup.Attributes {
-			if attrName == "default" {
-				log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s - weight %d", attrName, "default", locationName, attribute.Weight))
-				currScore, ok := locationScore[locationName]
-				if !ok {
-					currScore = 0
-				}
-				if currScore+attribute.Weight > maxValue {
-					maxValue = currScore + attribute.Weight
-				}
-				locationScore[locationName] = currScore + attribute.Weight
-			}
-
-			if lookupFunc := metadata.ValueFunc(ctx, attrName); lookupFunc != nil {
-				if lookupValue := lookupFunc(); lookupValue != "" {
-					for _, attributeValue := range attribute.Values {
-						if attributeValue.Value == lookupValue {
-							log.Debug(fmt.Sprintf("edgecdnx: found attribute %s with value %s at location %s - weight %d", attrName, lookupValue, locationName, attribute.Weight))
-
-							currScore, ok := locationScore[locationName]
-							if !ok {
-								currScore = 0
-							}
-							if currScore+attribute.Weight > maxValue {
-								maxValue = currScore + attribute.Weight + attributeValue.Weight
-							}
-							locationScore[locationName] = currScore + attribute.Weight + attributeValue.Weight
-						}
-					}
-				}
-			}
-		}
-	}
-
-	winners := make([]string, 0)
-
-	for locationName, score := range locationScore {
-		if score == maxValue {
-			winners = append(winners, locationName)
-		}
-	}
-
-	log.Debug(fmt.Sprintf("edgecdnx: found %d locations with score %d: %v", len(winners), maxValue, winners))
-
-	if len(winners) > 1 {
-		randomNumber := rand.Float64()
-		totalWeigth := 0
-
-		for _, locationName := range winners {
-			location := l.Locations[locationName]
-			totalWeigth = totalWeigth + location.Spec.GeoLookup.Weight
-		}
-
-		selector := (float64(totalWeigth) * randomNumber)
-
-		currentWeight := 0
-		for _, locationName := range winners {
-			location := l.Locations[locationName]
-			currentWeight += location.Spec.GeoLookup.Weight
-			if int(selector) <= currentWeight {
-				return locationName, nil
-			}
-		}
-	}
-
-	if len(winners) == 1 {
-		return winners[0], nil
-	}
-
-	return "", errors.New("No Location Found")
+	candidates := l.findGeoCandidatesLocked(routeSelector)
+	l.Sync.RUnlock()
+	return candidates.lookup(ctx)
 }
 
-func (l LocationManager) MatchesNodeGroupLabels(location string, selector *metav1.LabelSelector) bool {
+func (l *LocationManager) MatchesNodeGroupLabels(location string, selector *metav1.LabelSelector) bool {
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
@@ -389,6 +312,16 @@ func (l LocationManager) MatchesNodeGroupLabels(location string, selector *metav
 	return false
 }
 
+// setLocationLocked publishes current status but only invalidates targets for routing changes.
+func (l *LocationManager) setLocationLocked(location infrastructurev1alpha1.Location) {
+	previous, exists := l.Locations[location.Name]
+	l.Locations[location.Name] = location
+	if !exists || !equality.Semantic.DeepEqual(previous.Labels, location.Labels) ||
+		!equality.Semantic.DeepEqual(previous.Spec, location.Spec) {
+		l.revision.Add(1)
+	}
+}
+
 func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, config LocationManagerConfiguration) *LocationManager {
 	locationMgr := &LocationManager{
 		fac:       factory,
@@ -399,78 +332,7 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 
 	locationInformer := locationMgr.fac.ForResource(infrastructurev1alpha1.SchemeGroupVersion.WithResource("locations")).Informer()
 
-	locationInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			l_raw, ok := obj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: Failed to cast object to unstructured.Unstructured")
-				return
-			}
-
-			temp, err := json.Marshal(l_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: Failed to marshal location object: %v", err)
-				return
-			}
-			location := &infrastructurev1alpha1.Location{}
-			err = json.Unmarshal(temp, location)
-			if err != nil {
-				log.Errorf("edgecdnx: Failed to unmarshal location object: %v", err)
-				return
-			}
-
-			locationMgr.Sync.Lock()
-			defer locationMgr.Sync.Unlock()
-			locationMgr.Locations[location.Name] = *location
-			log.Infof("edgecdnx: Added Location %s", location.Name)
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			s_new_raw, ok := newObj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: expected Location object, got %T", s_new_raw)
-				return
-			}
-			temp, err := json.Marshal(s_new_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to marshal Location object: %v", err)
-				return
-			}
-			location := &infrastructurev1alpha1.Location{}
-			err = json.Unmarshal(temp, location)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to unmarshal Location object: %v", err)
-				return
-			}
-			locationMgr.Sync.Lock()
-			defer locationMgr.Sync.Unlock()
-			locationMgr.Locations[location.Name] = *location
-			log.Infof("edgecdnx: Updated Location %s", location.Name)
-		},
-		DeleteFunc: func(obj any) {
-			s_raw, ok := obj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: expected Location object, got %T", obj)
-				return
-			}
-
-			temp, err := json.Marshal(s_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to marshal Location object: %v", err)
-				return
-			}
-			location := &infrastructurev1alpha1.Location{}
-			err = json.Unmarshal(temp, location)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to unmarshal Location object: %v", err)
-				return
-			}
-
-			locationMgr.Sync.Lock()
-			defer locationMgr.Sync.Unlock()
-			delete(locationMgr.Locations, location.Name)
-			log.Infof("edgecdnx: Deleted Location %s", location.Name)
-		},
-	})
+	locationInformer.AddEventHandler(locationMgr.locationEventHandlers())
 
 	err := locationInformer.GetIndexer().AddIndexers(cache.Indexers{
 		"byParent": func(obj any) ([]string, error) {
@@ -502,4 +364,83 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 	locationMgr.Informer = locationInformer
 
 	return locationMgr
+}
+
+func (locationMgr *LocationManager) locationEventHandlers() cache.ResourceEventHandlerFuncs {
+	return cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			l_raw, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				log.Errorf("edgecdnx: Failed to cast object to unstructured.Unstructured")
+				return
+			}
+
+			temp, err := json.Marshal(l_raw.Object)
+			if err != nil {
+				log.Errorf("edgecdnx: Failed to marshal location object: %v", err)
+				return
+			}
+			location := &infrastructurev1alpha1.Location{}
+			err = json.Unmarshal(temp, location)
+			if err != nil {
+				log.Errorf("edgecdnx: Failed to unmarshal location object: %v", err)
+				return
+			}
+
+			locationMgr.Sync.Lock()
+			defer locationMgr.Sync.Unlock()
+			locationMgr.setLocationLocked(*location)
+			log.Infof("edgecdnx: Added Location %s", location.Name)
+		},
+		UpdateFunc: func(oldObj, newObj any) {
+			s_new_raw, ok := newObj.(*unstructured.Unstructured)
+			if !ok {
+				log.Errorf("edgecdnx: expected Location object, got %T", s_new_raw)
+				return
+			}
+			temp, err := json.Marshal(s_new_raw.Object)
+			if err != nil {
+				log.Errorf("edgecdnx: failed to marshal Location object: %v", err)
+				return
+			}
+			location := &infrastructurev1alpha1.Location{}
+			err = json.Unmarshal(temp, location)
+			if err != nil {
+				log.Errorf("edgecdnx: failed to unmarshal Location object: %v", err)
+				return
+			}
+			locationMgr.Sync.Lock()
+			defer locationMgr.Sync.Unlock()
+			locationMgr.setLocationLocked(*location)
+			log.Infof("edgecdnx: Updated Location %s", location.Name)
+		},
+		DeleteFunc: func(obj any) {
+			if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = tombstone.Obj
+			}
+			s_raw, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				log.Errorf("edgecdnx: expected Location object, got %T", obj)
+				return
+			}
+
+			temp, err := json.Marshal(s_raw.Object)
+			if err != nil {
+				log.Errorf("edgecdnx: failed to marshal Location object: %v", err)
+				return
+			}
+			location := &infrastructurev1alpha1.Location{}
+			err = json.Unmarshal(temp, location)
+			if err != nil {
+				log.Errorf("edgecdnx: failed to unmarshal Location object: %v", err)
+				return
+			}
+
+			locationMgr.Sync.Lock()
+			defer locationMgr.Sync.Unlock()
+			delete(locationMgr.Locations, location.Name)
+			locationMgr.revision.Add(1)
+			log.Infof("edgecdnx: Deleted Location %s", location.Name)
+		},
+	}
 }

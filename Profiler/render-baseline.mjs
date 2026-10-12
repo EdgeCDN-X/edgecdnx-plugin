@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const metrics = ['zones', 'records', 'achieved_qps', 'avg_latency_ms', 'max_latency_ms'];
-const optionalCounts = ['locations', 'locations_per_endpoint', 'nodes_per_location'];
+const optionalCounts = ['locations', 'locations_per_endpoint', 'nodes_per_location', 'node_groups_per_location'];
 const number = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
 const fixed = (value, digits) => value.toLocaleString('en-US', {
   minimumFractionDigits: digits, maximumFractionDigits: digits,
@@ -95,6 +95,15 @@ function scale(maximum) {
 
 export function renderSVG(rows, sourceName) {
   if (!rows.length) throw new Error('No measurements to render.');
+  const sourceLabel = basename(sourceName).replace(/\.csv$/i, '').toLowerCase();
+  const hasGeo = rows.some((row) => row.geo_attribute !== undefined || row.node_groups_per_location !== undefined) ||
+    /(?:^|[-_ ])(?:geo|geolookup|geolocation)(?:$|[-_ ])/.test(sourceLabel);
+  const hasECS = rows.some((row) => row.ecs_us_subnet !== undefined || row.ecs_eu_subnet !== undefined);
+  const hasWRR = rows.some((row) => row.location_weights !== undefined) ||
+    /(?:^|[-_ ])(?:wrr|weighted)(?:$|[-_ ])/.test(sourceLabel);
+  const isSimple = /(?:^|[-_ ])simple(?:$|[-_ ])/.test(sourceLabel);
+  const testName = hasGeo ? `GeoLookup${hasECS ? ' (EDNS0 ECS)' : ''}` :
+    hasWRR ? 'Weighted Round Robin (WRR)' : isSimple ? 'Simple routing' : 'DNS benchmark';
   const minimumZone = Math.min(...rows.map((row) => row.zones));
   const maximumZone = Math.max(...rows.map((row) => row.zones));
   const singleScale = minimumZone === maximumZone;
@@ -109,7 +118,6 @@ export function renderSVG(rows, sourceName) {
     if (Math.log10(zoneTicks.at(-1)) < high) zoneTicks.push(10 ** high);
   }
   const tableBottom = 520 + rows.length * 41;
-  const height = tableBottom + 88;
   const text = (x, y, content, className = 'tick', anchor = 'start') =>
     `<text x="${x}" y="${y}" class="${className}" text-anchor="${anchor}">${escape(content)}</text>`;
   const path = (d, className, color = '') =>
@@ -125,15 +133,23 @@ export function renderSVG(rows, sourceName) {
     uniform('qps_limit', 'offered QPS'),
     uniform('locations_per_endpoint', 'locations/endpoint'),
     uniform('location_weights', 'location weights'),
-    uniform('nodes_per_location', 'nodes/location'),
+    uniform('nodes_per_location', rows.some((row) => row.node_groups_per_location !== undefined) ? 'nodes/group' : 'nodes/location'),
+    uniform('node_groups_per_location', 'node groups/location'),
   ].filter(Boolean);
+  const geoConditions = [
+    uniform('geo_attribute', 'geo attribute'),
+    uniform('geo_values', 'geo values'),
+    uniform('ecs_us_subnet', 'US ECS block'),
+    uniform('ecs_eu_subnet', 'EU ECS block'),
+  ].filter(Boolean);
+  const height = tableBottom + 88 + (geoConditions.length ? 25 : 0);
   const hasLocations = rows.every((row) => row.locations !== undefined);
   const description = rows.map((row) =>
     `${row.zones} zones, ${row.records} records${hasLocations ? `, ${row.locations} locations` : ''}: ${row.achieved_qps} QPS, ` +
     `${row.avg_latency_ms} ms average, ${row.max_latency_ms} ms maximum.`).join(' ');
   const pieces = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="${height}" viewBox="0 0 1320 ${height}" role="img" aria-labelledby="title description">`,
-    '<title id="title">DNS baseline: throughput and query duration by zone count</title>',
+    `<title id="title">${escape(testName)}: throughput and query duration by zone count</title>`,
     `<desc id="description">${escape(description)} Zone axes are logarithmic; vertical axes start at zero.</desc>`,
     `<style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172b4d; }
@@ -150,7 +166,7 @@ export function renderSVG(rows, sourceName) {
       .note { font-size: 14px; fill: #52637a; }
     </style>`,
     `<rect width="1320" height="${height}" fill="#f5f7fb"/>`,
-    text(48, 54, 'DNS baseline: scale vs. query performance', 'heading'),
+    text(48, 54, `${testName}: scale vs. query performance`, 'heading'),
     text(48, 84, conditions.length ? conditions.slice(0, 3).join(' · ') : 'Measured throughput and query durations', 'subtitle'),
     ...(conditions.length > 3 ? [text(48, 105, conditions.slice(3).join(' · '), 'note')] : []),
   ];
@@ -214,6 +230,7 @@ export function renderSVG(rows, sourceName) {
   });
   pieces.push(text(48, tableBottom + 29, 'Points are measured runs; connecting lines are visual guides. Maxima are observed worst cases, not percentiles.', 'note'));
   pieces.push(text(48, tableBottom + 54, `Source: ${sourceName} · Exact values are shown in the table; no uncertainty estimates are inferred.`, 'note'));
+  if (geoConditions.length) pieces.push(text(48, tableBottom + 79, geoConditions.join(' · '), 'note'));
   pieces.push('</svg>');
   return pieces.join('\n') + '\n';
 }
@@ -237,9 +254,10 @@ function main() {
 
 Render a standalone SVG with three log-zone charts and an exact-value table.
 Required columns: ${metrics.join(', ')}
-Supports Simple and WRR CSVs, including shared-pool and per-endpoint locations.
+Supports Simple, WRR and GeoLookup CSVs, including per-endpoint locations.
 Optional columns: duration_s, clients, qps_limit, locations, locations_per_endpoint,
-                  location_weights, nodes_per_location
+                  location_weights, nodes_per_location, node_groups_per_location,
+                  geo_attribute, geo_values, ecs_us_subnet, ecs_eu_subnet
 Rows are sorted by zone count. Durations are in milliseconds.
 Default output: INPUT's basename with .svg extension in the current directory.
 Without input/output arguments, convert every CSV in the current directory to SVG.
