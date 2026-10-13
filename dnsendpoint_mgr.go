@@ -213,10 +213,18 @@ func (dm *DNSEndpointManager) getDNSEndpoint(qname string, qtype uint16) (*dnsEn
 	if log.D.Value() {
 		log.Debugf("edgecdnx: Looking up DNSEndpoint for %s %s", qname, dns.TypeToString[qtype])
 	}
-	key := endpointKey{name: dns.Fqdn(strings.ToLower(qname)), qtype: qtype}
+	normalizedName := dns.Fqdn(strings.ToLower(qname))
+	key := endpointKey{name: normalizedName, qtype: qtype}
 	if snapshot := dm.endpoints.Load(); snapshot != nil {
 		if dnsEndpoint, ok := snapshot.endpoints[key]; ok {
 			return dnsEndpoint, nil
+		}
+
+		if dot := strings.IndexByte(normalizedName, '.'); dot > 0 && dot < len(normalizedName)-1 {
+			wildcardKey := endpointKey{name: "*." + normalizedName[dot+1:], qtype: qtype}
+			if dnsEndpoint, ok := snapshot.endpoints[wildcardKey]; ok {
+				return dnsEndpoint, nil
+			}
 		}
 	}
 

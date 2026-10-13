@@ -437,6 +437,62 @@ func TestGetDNSEndpointNormalizesDNSNameAndRecordType(t *testing.T) {
 	}
 }
 
+func TestGetDNSEndpointFallsBackToSingleLabelWildcard(t *testing.T) {
+	wildcardEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "*.me.example.com", RecordType: "A",
+		},
+	}
+	manager := newTestDNSEndpointManager(wildcardEndpoint)
+
+	got, err := manager.GetDNSEndpoint("API.ME.EXAMPLE.COM.", dns.TypeA)
+	if err != nil {
+		t.Fatalf("GetDNSEndpoint() returned an error: %v", err)
+	}
+	if got.Name != wildcardEndpoint.Name {
+		t.Fatalf("GetDNSEndpoint().Name = %q, want %q", got.Name, wildcardEndpoint.Name)
+	}
+	if _, err := manager.GetDNSEndpoint("api.example.com.", dns.TypeA); err == nil {
+		t.Fatal("GetDNSEndpoint() matched a wildcard with a different suffix")
+	}
+
+	deeperWildcard := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "deeper-wildcard"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "*.example.com", RecordType: "A",
+		},
+	}
+	manager = newTestDNSEndpointManager(deeperWildcard)
+	if _, err := manager.GetDNSEndpoint("api.me.example.com.", dns.TypeA); err == nil {
+		t.Fatal("GetDNSEndpoint() matched a wildcard across multiple labels")
+	}
+}
+
+func TestGetDNSEndpointPrefersExactMatchOverWildcard(t *testing.T) {
+	exactEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "exact"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "api.me.example.com", RecordType: "A",
+		},
+	}
+	wildcardEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "*.me.example.com", RecordType: "A",
+		},
+	}
+	manager := newTestDNSEndpointManager(wildcardEndpoint, exactEndpoint)
+
+	got, err := manager.GetDNSEndpoint("api.me.example.com.", dns.TypeA)
+	if err != nil {
+		t.Fatalf("GetDNSEndpoint() returned an error: %v", err)
+	}
+	if got.Name != exactEndpoint.Name {
+		t.Fatalf("GetDNSEndpoint().Name = %q, want exact endpoint %q", got.Name, exactEndpoint.Name)
+	}
+}
+
 func TestGetDNSEndpointCNAMERequiresExactRecordType(t *testing.T) {
 	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-cname"},

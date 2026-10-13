@@ -62,6 +62,39 @@ func TestServeDNSSimpleEndpointReturnsTargets(t *testing.T) {
 	}
 }
 
+func TestServeDNSWildcardEndpointAnswersForQueriedName(t *testing.T) {
+	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard-a"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName:       "*.me.example.com",
+			RoutingPolicy: "Simple",
+			RecordTTL:     60,
+			RecordType:    "A",
+			Targets:       []string{"192.0.2.1"},
+		},
+	}
+	plugin := EdgeCDNX{DNSEndpointManager: newTestDNSEndpointManager(dnsEndpoint)}
+	request := new(dns.Msg)
+	request.SetQuestion("api.me.example.com.", dns.TypeA)
+	writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+	}}
+
+	rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err != nil {
+		t.Fatalf("ServeDNS() returned an error: %v", err)
+	}
+	if rcode != dns.RcodeSuccess {
+		t.Fatalf("ServeDNS() rcode = %d, want %d", rcode, dns.RcodeSuccess)
+	}
+	if len(writer.msg.Answer) != 1 {
+		t.Fatalf("len(Answer) = %d, want 1", len(writer.msg.Answer))
+	}
+	if got, want := writer.msg.Answer[0].Header().Name, "api.me.example.com."; got != want {
+		t.Fatalf("Answer owner = %q, want queried name %q", got, want)
+	}
+}
+
 func TestServeDNSSimpleEndpointReturnsTXTTargets(t *testing.T) {
 	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-txt"},
