@@ -25,7 +25,7 @@ import (
 
 type LocationManagerConfiguration struct {
 	Namespace string
-	RecrodTTL uint32
+	RecordTTL uint32
 }
 
 type LocationManager struct {

@@ -3,7 +3,6 @@ package edgecdnxplugin
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/coredns/caddy"
@@ -23,16 +22,6 @@ import (
 
 type NSRecord struct {
 	Target string
-}
-
-func parseResponseType(raw string) (ResponseType, error) {
-	value := ResponseType(strings.ToUpper(raw))
-	switch value {
-	case CNAME, A_AAAA:
-		return value, nil
-	default:
-		return "", fmt.Errorf("invalid response type %q, expected one of: %s, %s", raw, CNAME, A_AAAA)
-	}
 }
 
 // init registers this plugin.
@@ -61,8 +50,6 @@ func setup(c *caddy.Controller) error {
 	var namespace, soa string // Base Zone configuration
 	var ns []NSRecord = make([]NSRecord, 0)
 	var recordttl uint32 = 60
-	var dnsResponseType ResponseType = A_AAAA
-	var grpcResponseType ResponseType = CNAME
 
 	for c.NextBlock() {
 		val := c.Val()
@@ -90,21 +77,13 @@ func setup(c *caddy.Controller) error {
 			if len(args) != 1 {
 				return plugin.Error("edgecdnx", fmt.Errorf("expected 1 argument for dnsresponsetype, got %d", len(args)))
 			}
-			parsed, err := parseResponseType(args[0])
-			if err != nil {
-				return plugin.Error("edgecdnx", err)
-			}
-			dnsResponseType = parsed
+			log.Warningf("dnsresponse type argument is deprecated. Router now always returns A or AAAA results")
 		}
 		if val == "grpcresponsetype" {
 			if len(args) != 1 {
 				return plugin.Error("edgecdnx", fmt.Errorf("expected 1 argument for grpcresponsetype, got %d", len(args)))
 			}
-			parsed, err := parseResponseType(args[0])
-			if err != nil {
-				return plugin.Error("edgecdnx", err)
-			}
-			grpcResponseType = parsed
+			log.Warningf("grpcresponse type argument is deprecated. Router now always returns A or AAAA results")
 		}
 	}
 
@@ -132,7 +111,7 @@ func setup(c *caddy.Controller) error {
 
 	locationManager := NewLocationManager(fac, LocationManagerConfiguration{
 		Namespace: namespace,
-		RecrodTTL: recordttl,
+		RecordTTL: recordttl,
 	})
 
 	factoryCloseChan := make(chan struct{})
@@ -153,8 +132,6 @@ func setup(c *caddy.Controller) error {
 			DNSEndpointManager:       dnsEndpointManager,
 			PrefixListRoutingManager: prefixListRoutingManager,
 			LocationManager:          locationManager,
-			DNSResponseType:          dnsResponseType,
-			GRPCResponseType:         grpcResponseType,
 		}
 	})
 

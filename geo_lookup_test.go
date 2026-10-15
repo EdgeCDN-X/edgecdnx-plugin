@@ -373,7 +373,7 @@ func TestServeDNSGeoLookupTargetsOnlyMatchingNodeGroups(t *testing.T) {
 	manager.Locations[location.Name], manager.Locations[excluded.Name] = location, excluded
 	prefixManager := newTestPrefixListRoutingManager()
 	plugin := EdgeCDNX{DNSEndpointManager: dm, LocationManager: &manager,
-		PrefixListRoutingManager: &prefixManager, DNSResponseType: A_AAAA}
+		PrefixListRoutingManager: &prefixManager}
 	assertAnswer := func(want string) {
 		t.Helper()
 		for i := 0; i < 10; i++ {

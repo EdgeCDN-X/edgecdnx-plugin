@@ -153,13 +153,12 @@ func TestServeDNSGeolocationEndpointUsesPrefixRoutingAndSelector(t *testing.T) {
 	location.Spec.NodeGroups[0].Labels = map[string]string{"tenant": "acme"}
 	locationManager := newTestLocationManager(t)
 	locationManager.Locations[location.Name] = location
-	locationManager.Config.RecrodTTL = 60
+	locationManager.Config.RecordTTL = 60
 
 	plugin := EdgeCDNX{
 		DNSEndpointManager:       dnsEndpointManager,
 		PrefixListRoutingManager: &prefixManager,
 		LocationManager:          &locationManager,
-		DNSResponseType:          A_AAAA,
 	}
 	request := new(dns.Msg)
 	request.SetQuestion("example.com.", dns.TypeA)
@@ -219,12 +218,11 @@ func TestServeDNSRoundRobinEndpointCyclesThroughLocations(t *testing.T) {
 	locationManager.Locations[locA.Name] = locA
 	locationManager.Locations[locB.Name] = locB
 	locationManager.Locations[locC.Name] = locC
-	locationManager.Config.RecrodTTL = 60
+	locationManager.Config.RecordTTL = 60
 
 	plugin := EdgeCDNX{
 		DNSEndpointManager: dnsEndpointManager,
 		LocationManager:    &locationManager,
-		DNSResponseType:    A_AAAA,
 	}
 
 	// Sorted locations are [loc-a, loc-b, loc-c]; GetNext starts by incrementing to 1, so
@@ -276,7 +274,6 @@ func TestServeDNSRoundRobinEndpointFallsThroughWhenNoLocationsMatch(t *testing.T
 	plugin := EdgeCDNX{
 		DNSEndpointManager: dnsEndpointManager,
 		LocationManager:    &locationManager,
-		DNSResponseType:    A_AAAA,
 	}
 	request := new(dns.Msg)
 	request.SetQuestion("example.com.", dns.TypeA)
@@ -308,7 +305,6 @@ func TestServeDNSWeightedEndpointUsesEntryState(t *testing.T) {
 	plugin := EdgeCDNX{
 		DNSEndpointManager: manager,
 		LocationManager:    &locationManager,
-		DNSResponseType:    A_AAAA,
 	}
 	for _, want := range []string{"192.0.2.2", "192.0.2.1", "192.0.2.2", "192.0.2.2", "192.0.2.1", "192.0.2.2"} {
 		request := new(dns.Msg)
@@ -403,12 +399,11 @@ func newFailoverTestPlugin(t *testing.T, primaryUnhealthy, fallbackUnhealthy boo
 	locationManager := newTestLocationManager(t)
 	locationManager.Locations[primary.Name] = primary
 	locationManager.Locations[backup.Name] = backup
-	locationManager.Config.RecrodTTL = 60
+	locationManager.Config.RecordTTL = 60
 
 	return EdgeCDNX{
 		DNSEndpointManager: dnsEndpointManager,
 		LocationManager:    &locationManager,
-		DNSResponseType:    A_AAAA,
 	}, key
 }
 
