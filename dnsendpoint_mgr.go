@@ -2,6 +2,7 @@ package edgecdnxplugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -21,6 +22,8 @@ import (
 // roundRobinResetThreshold caps the counter well below the uint32 range so Add never wraps around.
 const roundRobinResetThreshold = math.MaxUint32 - (1 << 16)
 
+var errConflictingDNS = errors.New("conflicting DNS resources")
+
 type DNSEndpointManagerConfiguration struct {
 	Namespace string
 }
@@ -30,11 +33,13 @@ type DNSEndpointManager struct {
 	Informer  cache.SharedIndexInformer
 	Sync      *sync.RWMutex
 	endpoints atomic.Pointer[dnsEndpointSnapshot]
+	sources   map[string]*infrastructurev1alpha1.DNSEndpoint
 }
 
 // Published snapshots and their endpoint configuration must never be mutated.
 type dnsEndpointSnapshot struct {
 	endpoints map[endpointKey]*dnsEndpointEntry
+	conflicts map[endpointKey]bool
 }
 
 type endpointKey struct {
@@ -73,7 +78,7 @@ func (entry *dnsEndpointEntry) matchingLocationTargets(manager *LocationManager)
 	if cached := entry.targets.Load(); cached != nil && cached.manager == manager && cached.revision == revision {
 		return cached.targets
 	}
-	targets := manager.findMatchingTargetsWithWeightsLocked(entry.Spec.RouteSelector)
+	targets := manager.findMatchingTargetsWithWeightsLocked(entry.Spec.RouteSelector, scopeFor(entry.Namespace, entry.Spec.Project))
 	entry.targets.Store(&endpointLocationTargets{manager: manager, revision: revision, targets: targets})
 	return targets
 }
@@ -216,12 +221,18 @@ func (dm *DNSEndpointManager) getDNSEndpoint(qname string, qtype uint16) (*dnsEn
 	normalizedName := dns.Fqdn(strings.ToLower(qname))
 	key := endpointKey{name: normalizedName, qtype: qtype}
 	if snapshot := dm.endpoints.Load(); snapshot != nil {
+		if snapshot.conflicts[key] {
+			return nil, fmt.Errorf("%w for %s %s", errConflictingDNS, qname, dns.TypeToString[qtype])
+		}
 		if dnsEndpoint, ok := snapshot.endpoints[key]; ok {
 			return dnsEndpoint, nil
 		}
 
 		if dot := strings.IndexByte(normalizedName, '.'); dot > 0 && dot < len(normalizedName)-1 {
 			wildcardKey := endpointKey{name: "*." + normalizedName[dot+1:], qtype: qtype}
+			if snapshot.conflicts[wildcardKey] {
+				return nil, fmt.Errorf("%w for wildcard %s", errConflictingDNS, wildcardKey.name)
+			}
 			if dnsEndpoint, ok := snapshot.endpoints[wildcardKey]; ok {
 				return dnsEndpoint, nil
 			}
@@ -233,13 +244,21 @@ func (dm *DNSEndpointManager) getDNSEndpoint(qname string, qtype uint16) (*dnsEn
 
 // publishEndpoint requires Sync's write lock to serialize copy-on-write updates.
 // Readers may retain the old snapshot while a replacement is published.
-func (dm *DNSEndpointManager) publishEndpoint(oldKey endpointKey, endpoint *infrastructurev1alpha1.DNSEndpoint) {
+func (dm *DNSEndpointManager) publishEndpoint(oldKey endpointKey, endpoint *infrastructurev1alpha1.DNSEndpoint, conflict ...bool) {
 	endpoints := make(map[endpointKey]*dnsEndpointEntry)
+	conflicts := make(map[endpointKey]bool)
 	if snapshot := dm.endpoints.Load(); snapshot != nil {
 		endpoints = maps.Clone(snapshot.endpoints)
+		if snapshot.conflicts != nil {
+			conflicts = maps.Clone(snapshot.conflicts)
+		}
 	}
 	previous := endpoints[oldKey]
 	delete(endpoints, oldKey)
+	delete(conflicts, oldKey)
+	if len(conflict) != 0 && conflict[0] {
+		conflicts[oldKey] = true
+	}
 	if endpoint != nil {
 		key := dnsEndpointKey(endpoint.Spec.DNSName, endpoint.Spec.RecordType)
 		entry := &dnsEndpointEntry{
@@ -257,7 +276,43 @@ func (dm *DNSEndpointManager) publishEndpoint(oldKey endpointKey, endpoint *infr
 		}
 		endpoints[key] = entry
 	}
-	dm.endpoints.Store(&dnsEndpointSnapshot{endpoints: endpoints})
+	dm.endpoints.Store(&dnsEndpointSnapshot{endpoints: endpoints, conflicts: conflicts})
+}
+
+func (dm *DNSEndpointManager) updateEndpointSources(oldEndpoint, newEndpoint *infrastructurev1alpha1.DNSEndpoint) {
+	if dm.sources == nil {
+		dm.sources = make(map[string]*infrastructurev1alpha1.DNSEndpoint)
+		if snapshot := dm.endpoints.Load(); snapshot != nil {
+			for _, entry := range snapshot.endpoints {
+				dm.sources[resourceKey(entry.Namespace, entry.Name)] = entry.DNSEndpoint
+			}
+		}
+	}
+	keys := make(map[endpointKey]struct{})
+	if oldEndpoint != nil {
+		delete(dm.sources, resourceKey(oldEndpoint.Namespace, oldEndpoint.Name))
+		keys[dnsEndpointKey(oldEndpoint.Spec.DNSName, oldEndpoint.Spec.RecordType)] = struct{}{}
+	}
+	if newEndpoint != nil {
+		dm.sources[resourceKey(newEndpoint.Namespace, newEndpoint.Name)] = newEndpoint.DeepCopy()
+		keys[dnsEndpointKey(newEndpoint.Spec.DNSName, newEndpoint.Spec.RecordType)] = struct{}{}
+	}
+	for key := range keys {
+		var candidate *infrastructurev1alpha1.DNSEndpoint
+		count := 0
+		for _, source := range dm.sources {
+			if dnsEndpointKey(source.Spec.DNSName, source.Spec.RecordType) == key {
+				candidate = source
+				count++
+			}
+		}
+		if count > 1 {
+			log.Errorf("edgecdnx: %d DNSEndpoints claim DNS identity %s %s; refusing ambiguous answers", count, key.name, dns.TypeToString[key.qtype])
+			dm.publishEndpoint(key, nil, true)
+		} else {
+			dm.publishEndpoint(key, candidate)
+		}
+	}
 }
 
 func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory, config DNSEndpointManagerConfiguration) *DNSEndpointManager {
@@ -291,7 +346,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			dm.publishEndpoint(endpointKey{}, dnsEndpoint)
+			dm.updateEndpointSources(nil, dnsEndpoint)
 			log.Infof("edgecdnx: Added DNSEndpoint %s", dnsEndpoint.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
@@ -308,8 +363,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			oldKey := dnsEndpointKey(oldDNSEndpoint.Spec.DNSName, oldDNSEndpoint.Spec.RecordType)
-			dm.publishEndpoint(oldKey, newDNSEndpoint)
+			dm.updateEndpointSources(oldDNSEndpoint, newDNSEndpoint)
 			log.Infof("edgecdnx: Updated DNSEndpoint %s", newDNSEndpoint.Name)
 		},
 		DeleteFunc: func(obj any) {
@@ -321,8 +375,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
-			key := dnsEndpointKey(dnsEndpoint.Spec.DNSName, dnsEndpoint.Spec.RecordType)
-			dm.publishEndpoint(key, nil)
+			dm.updateEndpointSources(dnsEndpoint, nil)
 			log.Infof("edgecdnx: Deleted DNSEndpoint %s", dnsEndpoint.Name)
 		},
 	}

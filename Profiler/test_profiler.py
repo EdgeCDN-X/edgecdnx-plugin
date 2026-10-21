@@ -327,6 +327,37 @@ class GeneratorTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_kubectl_command_pins_kubeconfig_and_context(self):
+        with patch("sys.argv", [
+            "test-simple.py", "--kubeconfig", "/tmp/upstream.kubeconfig", "--context", "kind-edgecdnx",
+        ]):
+            parsed_runner_args = runner.parse_args()
+        self.assertEqual(parsed_runner_args.kubeconfig, "/tmp/upstream.kubeconfig")
+        self.assertEqual(parsed_runner_args.context, "kind-edgecdnx")
+
+        with patch("sys.argv", [
+            "generate_zones.py", "--zones", "1", "--kubeconfig", "/tmp/local.kubeconfig",
+            "--context", "kind-edgecdnx-downstream",
+        ]):
+            parsed_generator_args = gz.parse_args()
+        self.assertEqual(parsed_generator_args.kubeconfig, "/tmp/local.kubeconfig")
+        self.assertEqual(parsed_generator_args.context, "kind-edgecdnx-downstream")
+
+        args = SimpleNamespace(kubeconfig="/tmp/upstream.kubeconfig", context="kind-edgecdnx")
+        self.assertEqual(
+            runner.kubectl_cmd(args),
+            ["kubectl", "--kubeconfig", "/tmp/upstream.kubeconfig", "--context", "kind-edgecdnx"],
+        )
+
+        generated_args = SimpleNamespace(kubeconfig="/tmp/local.kubeconfig", context="kind-edgecdnx-downstream")
+        with patch.object(gz.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertEqual(gz.kubectl(generated_args, "get", "dnsendpoints"), 0)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["kubectl", "--kubeconfig", "/tmp/local.kubeconfig", "--context", "kind-edgecdnx-downstream",
+             "get", "dnsendpoints"],
+        )
+
     def test_geo_defaults(self):
         with patch("sys.argv", ["test-geo.py"]):
             args = runner.parse_args("Geolocation")

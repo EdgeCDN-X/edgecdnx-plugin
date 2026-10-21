@@ -60,16 +60,19 @@ func (entry *dnsEndpointEntry) matchingGeoCandidates(manager *LocationManager) *
 	if cached := entry.geo.Load(); cached != nil && cached.manager == manager && cached.revision == revision {
 		return cached
 	}
-	candidates := manager.findGeoCandidatesLocked(entry.Spec.RouteSelector)
+	candidates := manager.findGeoCandidatesLocked(entry.Spec.RouteSelector, scopeFor(entry.Namespace, entry.Spec.Project))
 	entry.geo.Store(candidates)
 	return candidates
 }
 
-func (l *LocationManager) findGeoCandidatesLocked(routeSelector *metav1.LabelSelector) *endpointGeoCandidates {
+func (l *LocationManager) findGeoCandidatesLocked(routeSelector *metav1.LabelSelector, scopes ...routingScope) *endpointGeoCandidates {
 	result := &endpointGeoCandidates{manager: l, revision: l.revision.Load()}
 	selector := compileRouteSelector(routeSelector)
 	attributeIndices := make(map[string]int)
 	for locationName, location := range l.Locations {
+		if !matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) {
+			continue
+		}
 		matches := false
 		for _, ng := range location.Spec.NodeGroups {
 			fullLabels := make(map[string]string, len(location.Labels)+len(ng.Labels))

@@ -9,11 +9,67 @@ import (
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/miekg/dns"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
 )
+
+func TestLocationCacheSeparatesNamespaces(t *testing.T) {
+	manager := newTestLocationManager(t)
+	handlers := manager.locationEventHandlers()
+	first := newTestLocation("edge", nil, "", "first-node")
+	first.Namespace = "tenant-a"
+	second := newTestLocation("edge", nil, "", "second-node")
+	second.Namespace = "tenant-b"
+	handlers.AddFunc(testLocationObject(t, first))
+	handlers.AddFunc(testLocationObject(t, second))
+	for _, location := range []infrastructurev1alpha1.Location{first, second} {
+		got, err := manager.GetLocationByName(resourceKey(location.Namespace, location.Name))
+		if err != nil || got.Namespace != location.Namespace {
+			t.Fatalf("namespace %s was overwritten: %+v, %v", location.Namespace, got, err)
+		}
+	}
+	handlers.DeleteFunc(testLocationObject(t, first))
+	if _, err := manager.GetLocationByName(resourceKey(second.Namespace, second.Name)); err != nil {
+		t.Fatal("deleting one tenant's Location removed another tenant's Location")
+	}
+}
+
+func TestEndpointLocationCandidatesStayWithinTenant(t *testing.T) {
+	manager := newTestLocationManager(t)
+	for _, tenant := range []struct{ namespace, project, name string }{
+		{"tenant-a", "one", "edge"}, {"tenant-b", "one", "edge"}, {"tenant-a", "two", "foreign"},
+	} {
+		location := newTestLocation(tenant.name, nil, "", "node")
+		location.Namespace = tenant.namespace
+		location.Spec.Project = &corev1.LocalObjectReference{Name: tenant.project}
+		manager.locationEventHandlers().AddFunc(testLocationObject(t, location))
+	}
+	endpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+		Spec:       infrastructurev1alpha1.DNSEndpointSpec{Project: &corev1.LocalObjectReference{Name: "one"}, DNSName: "example.com", RecordType: "A"},
+	}
+	entry, err := newTestDNSEndpointManager(endpoint).getDNSEndpoint("example.com", dns.TypeA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := entry.matchingLocationTargets(&manager)
+	if len(targets) != 1 || targets[0].Name != "tenant-a/edge" {
+		t.Fatalf("weighted/round-robin targets crossed tenants: %v", targets)
+	}
+	geo := entry.matchingGeoCandidates(&manager)
+	if len(geo.candidates) != 1 || geo.candidates[0].name != "tenant-a/edge" {
+		t.Fatalf("geolocation candidates crossed tenants: %v", geo.candidates)
+	}
+	scope := scopeFor(endpoint.Namespace, endpoint.Spec.Project)
+	for _, name := range []string{"foreign", "tenant-b/edge"} {
+		if _, err := manager.GetLocationByName(name, scope); err == nil {
+			t.Fatalf("cross-tenant reference %q was accepted", name)
+		}
+	}
+}
 
 func testLocationObject(t *testing.T, location infrastructurev1alpha1.Location) *unstructured.Unstructured {
 	t.Helper()

@@ -33,6 +33,7 @@ type PrefixListRoutingManager struct {
 }
 
 type PrefixRoutingTable struct {
+	Scope     routingScope
 	Labels    map[string]string
 	RoutingV4 *avltree.Tree
 	RoutingV6 *avltree.Tree
@@ -124,26 +125,35 @@ func compareV6PrefixTreeEntries(a any, b any) int {
 	return 0
 }
 
-func (p PrefixListRoutingManager) routingTableFor(labels map[string]string) *PrefixRoutingTable {
+func (p PrefixListRoutingManager) routingTableFor(labels map[string]string, scopes ...routingScope) *PrefixRoutingTable {
 	key := prefixListLabelKey(labels)
+	var scope routingScope
+	if len(scopes) != 0 {
+		scope = scopes[0]
+		key = scope.namespace + "/" + scope.project + "/" + key
+	}
 	table, ok := p.RoutingTables[key]
 	if !ok {
 		table = newPrefixRoutingTable(labels)
+		table.Scope = scope
 		p.RoutingTables[key] = table
 	}
 
 	return table
 }
 
-func (p PrefixListRoutingManager) removeRoutingTableIfEmpty(labels map[string]string) {
+func (p PrefixListRoutingManager) removeRoutingTableIfEmpty(labels map[string]string, scopes ...routingScope) {
 	key := prefixListLabelKey(labels)
+	if len(scopes) != 0 {
+		key = scopes[0].namespace + "/" + scopes[0].project + "/" + key
+	}
 	table, ok := p.RoutingTables[key]
 	if ok && table.RoutingV4.Len() == 0 && table.RoutingV6.Len() == 0 {
 		delete(p.RoutingTables, key)
 	}
 }
 
-func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, routeSelector *metav1.LabelSelector) (bool, string) {
+func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, routeSelector *metav1.LabelSelector, scopes ...routingScope) (bool, string) {
 	srcIP := net.ParseIP(state.IP())
 	var bestMatch PrefixTreeEntry
 	bestPrefixLength := -1
@@ -167,6 +177,9 @@ func (p PrefixListRoutingManager) IsPrefixRouted(state request.Request, routeSel
 
 	for _, routingTableKey := range routingTableKeys {
 		routingTable := p.RoutingTables[routingTableKey]
+		if len(scopes) != 0 && routingTable.Scope != scopes[0] {
+			continue
+		}
 		if !matchesLabelSelector(routingTable.Labels, routeSelector) {
 			continue
 		}
@@ -249,7 +262,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 			}
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
-			routingTable := prefixListMgr.routingTableFor(prefixList.Labels)
+			routingTable := prefixListMgr.routingTableFor(prefixList.Labels, scopeFor(prefixList.Namespace, prefixList.Spec.Project))
 			for _, v := range prefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -313,7 +326,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
-			oldRoutingTable := prefixListMgr.routingTableFor(oldPrefixList.Labels)
+			oldRoutingTable := prefixListMgr.routingTableFor(oldPrefixList.Labels, scopeFor(oldPrefixList.Namespace, oldPrefixList.Spec.Project))
 			for _, v := range oldPrefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -338,9 +351,9 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					Prefix:   *ipnet,
 				})
 			}
-			prefixListMgr.removeRoutingTableIfEmpty(oldPrefixList.Labels)
+			prefixListMgr.removeRoutingTableIfEmpty(oldPrefixList.Labels, scopeFor(oldPrefixList.Namespace, oldPrefixList.Spec.Project))
 
-			newRoutingTable := prefixListMgr.routingTableFor(newPrefixList.Labels)
+			newRoutingTable := prefixListMgr.routingTableFor(newPrefixList.Labels, scopeFor(newPrefixList.Namespace, newPrefixList.Spec.Project))
 			for _, v := range newPrefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -387,7 +400,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 
 			prefixListMgr.Sync.Lock()
 			defer prefixListMgr.Sync.Unlock()
-			routingTable := prefixListMgr.routingTableFor(prefixList.Labels)
+			routingTable := prefixListMgr.routingTableFor(prefixList.Labels, scopeFor(prefixList.Namespace, prefixList.Spec.Project))
 			for _, v := range prefixList.Spec.Prefix.V4 {
 				_, ipnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", v.Address, v.Size))
 				if err != nil {
@@ -412,7 +425,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					Prefix:   *ipnet,
 				})
 			}
-			prefixListMgr.removeRoutingTableIfEmpty(prefixList.Labels)
+			prefixListMgr.removeRoutingTableIfEmpty(prefixList.Labels, scopeFor(prefixList.Namespace, prefixList.Spec.Project))
 			log.Infof("edgecdnxprefixlist: Deleted PrefixList %s", prefixList.Name)
 		},
 	})

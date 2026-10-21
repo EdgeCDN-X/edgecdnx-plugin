@@ -1,9 +1,9 @@
 package edgecdnxplugin
 
 import (
-	"encoding/json"
 	"fmt"
-	"slices"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,17 +12,20 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/miekg/dns"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 )
 
 type ZoneManager struct {
-	fac      dynamicinformer.DynamicSharedInformerFactory
-	Informer cache.SharedIndexInformer
-	Sync     *sync.RWMutex
-	Zones    []string
-	Records  map[string][]dns.RR
+	fac       dynamicinformer.DynamicSharedInformerFactory
+	Informer  cache.SharedIndexInformer
+	Sync      *sync.RWMutex
+	Zones     []string
+	Records   map[string][]dns.RR
+	sources   map[string]*infrastructurev1alpha1.Zone
+	conflicts map[string]bool
 }
 
 type ZoneManagerConfiguration struct {
@@ -80,116 +83,82 @@ func NewZoneManager(factory dynamicinformer.DynamicSharedInformerFactory, config
 
 	log.Infof("edgecdnx: Watching Zones in namespace %s", config.Namespace)
 
-	zoneInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			s_raw, ok := obj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: expected Zone object, got %T", obj)
-				return
-			}
-
-			temp, err := json.Marshal(s_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to marshal Zone object: %v", err)
-				return
-			}
-			zone := &infrastructurev1alpha1.Zone{}
-			err = json.Unmarshal(temp, zone)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to unmarshal Zone object: %v", err)
-				return
-			}
-
-			zm.Sync.Lock()
-			defer zm.Sync.Unlock()
-
-			zoneNormalized := fmt.Sprintf("%s.", zone.Spec.Zone)
-			lookup := plugin.Zones(config.Origins).Matches(zoneNormalized)
-
-			if lookup != "" {
-				match := plugin.Zones(zm.Zones).Matches(zoneNormalized)
-				if match != "" {
-					log.Warningf("edgecdnx: Zone %s already covered by %s, ignoring", zoneNormalized, match)
-					return
-				}
-
-				recordList, err := buildZoneRecords(*zone, config.SOA, config.NS)
-				if err != nil {
-					log.Errorf("edgecdnx: failed to build zone records for zone %s: %v", zoneNormalized, err)
-					return
-				}
-
-				zm.Zones = append(zm.Zones, zoneNormalized)
-				zm.Records[zoneNormalized] = recordList
-				log.Infof("edgecdnx: Added Zone %s, with the following records: %v", zoneNormalized, recordList)
-			} else {
-				log.Warningf("edgecdnx: Zone %s is not served in this block. Ignoring", zoneNormalized)
-			}
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			z_new_raw, ok := newObj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: expected zone object, got %T", z_new_raw)
-				return
-			}
-
-			temp, err := json.Marshal(z_new_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to marshal zone object: %v", err)
-				return
-			}
-			newZone := &infrastructurev1alpha1.Zone{}
-			err = json.Unmarshal(temp, newZone)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to unmarshal zone object: %v", err)
-				return
-			}
-
-			zm.Sync.Lock()
-			defer zm.Sync.Unlock()
-
-			zoneNormalized := fmt.Sprintf("%s.", newZone.Spec.Zone)
-			recordList, err := buildZoneRecords(*newZone, config.SOA, config.NS)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to build zone records for zone %s: %v", zoneNormalized, err)
-				return
-			}
-
-			delete(zm.Records, zoneNormalized)
-			zm.Records[zoneNormalized] = recordList
-		},
-		DeleteFunc: func(obj any) {
-			z_raw, ok := obj.(*unstructured.Unstructured)
-			if !ok {
-				log.Errorf("edgecdnx: expected Zone object, got %T", obj)
-				return
-			}
-
-			temp, err := json.Marshal(z_raw.Object)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to marshal Zone object: %v", err)
-				return
-			}
-			zone := &infrastructurev1alpha1.Zone{}
-			err = json.Unmarshal(temp, zone)
-			if err != nil {
-				log.Errorf("edgecdnx: failed to unmarshal Service object: %v", err)
-				return
-			}
-
-			zm.Sync.Lock()
-			defer zm.Sync.Unlock()
-
-			zoneNormalized := fmt.Sprintf("%s.", zone.Spec.Zone)
-			delete(zm.Records, zoneNormalized)
-			zm.Zones = slices.DeleteFunc(zm.Zones, func(z string) bool {
-				return z == zoneNormalized
-			})
-			log.Infof("edgecdnx: Deleted Zone %s", zoneNormalized)
-		},
-	})
+	zoneInformer.AddEventHandler(zm.zoneEventHandlers(config))
 
 	zm.Informer = zoneInformer
 
 	return zm
+}
+
+func (zm *ZoneManager) zoneEventHandlers(config ZoneManagerConfiguration) cache.ResourceEventHandlerFuncs {
+	handle := func(object any, deleted bool) {
+		if tombstone, ok := object.(cache.DeletedFinalStateUnknown); ok {
+			object = tombstone.Obj
+		}
+		resource, ok := object.(*unstructured.Unstructured)
+		if !ok {
+			log.Errorf("edgecdnx: expected Zone object, got %T", object)
+			return
+		}
+		zone := &infrastructurev1alpha1.Zone{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, zone); err != nil {
+			log.Errorf("edgecdnx: failed to decode Zone: %v", err)
+			return
+		}
+		zm.Sync.Lock()
+		defer zm.Sync.Unlock()
+		if zm.sources == nil {
+			zm.sources = make(map[string]*infrastructurev1alpha1.Zone)
+		}
+		key := resourceKey(zone.Namespace, zone.Name)
+		if deleted {
+			delete(zm.sources, key)
+		} else {
+			zm.sources[key] = zone
+		}
+		zm.rebuildZonesLocked(config)
+	}
+	return cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(object any) { handle(object, false) },
+		UpdateFunc: func(_, object any) { handle(object, false) },
+		DeleteFunc: func(object any) { handle(object, true) },
+	}
+}
+
+func (zm *ZoneManager) rebuildZonesLocked(config ZoneManagerConfiguration) {
+	byDomain := make(map[string][]*infrastructurev1alpha1.Zone)
+	for _, zone := range zm.sources {
+		domain := dns.Fqdn(strings.ToLower(zone.Spec.Zone))
+		if plugin.Zones(config.Origins).Matches(domain) != "" {
+			byDomain[domain] = append(byDomain[domain], zone)
+		}
+	}
+	zm.Zones = nil
+	zm.Records = make(map[string][]dns.RR)
+	zm.conflicts = make(map[string]bool)
+	for domain, zones := range byDomain {
+		if len(zones) > 1 {
+			zm.conflicts[domain] = true
+			log.Errorf("edgecdnx: multiple Zones claim %s; refusing ambiguous answers", domain)
+			continue
+		}
+		records, err := buildZoneRecords(*zones[0], config.SOA, config.NS)
+		if err != nil {
+			continue
+		}
+		zm.Zones = append(zm.Zones, domain)
+		zm.Records[domain] = records
+	}
+	sort.Strings(zm.Zones)
+}
+
+func (zm *ZoneManager) hasConflict(qname string) bool {
+	zm.Sync.RLock()
+	defer zm.Sync.RUnlock()
+	for domain := range zm.conflicts {
+		if dns.IsSubDomain(domain, dns.Fqdn(strings.ToLower(qname))) {
+			return true
+		}
+	}
+	return false
 }

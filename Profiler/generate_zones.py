@@ -114,7 +114,8 @@ def parse_args():
     p.add_argument("--apply", action="store_true", help="Pipe manifests to 'kubectl apply -f -'")
     p.add_argument("--delete", action="store_true",
                    help=f"Delete all Zones/DNSEndpoints/Locations labelled {LABEL_KEY}=true and exit")
-    p.add_argument("--context", help="kubectl context to use")
+    p.add_argument("--kubeconfig", help="Kubeconfig file to pin kubectl to (independent of the active context in other terminals)")
+    p.add_argument("--context", help="kubectl context within the selected kubeconfig")
     p.add_argument("--routing-policy", choices=("Simple", "Weighted", "Geolocation"), default="Simple",
                    help="Endpoint routing policy; Weighted and Geolocation also generate locations")
     add_wrr_options(p)
@@ -345,6 +346,8 @@ def generate(args, rng, stats, records=None, start=1):
 
 def kubectl(args, *cmd, stdin=None):
     base = ["kubectl"]
+    if args.kubeconfig:
+        base += ["--kubeconfig", args.kubeconfig]
     if args.context:
         base += ["--context", args.context]
     return subprocess.run(base + list(cmd), input=stdin, text=True, check=False).returncode

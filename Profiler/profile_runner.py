@@ -62,7 +62,8 @@ def parse_args(routing_policy="Simple"):
     p.add_argument("--sync-timeout", type=int, default=600,
                    help="Max seconds to wait for the plugin to serve new records (default: 600)")
     p.add_argument("-n", "--namespace", default="edgecdnx", help="Namespace (default: edgecdnx)")
-    p.add_argument("--context", help="kubectl context")
+    p.add_argument("--kubeconfig", help="Kubeconfig file to pin kubectl to (independent of the active context in other terminals)")
+    p.add_argument("--context", help="kubectl context within the selected kubeconfig")
     p.add_argument("--apply-workers", type=int, default=8, help="Parallel kubectl apply processes (default: 8)")
     p.add_argument("--chunk-size", type=int, default=500, help="Manifests per kubectl apply (default: 500)")
     p.add_argument("--seed", type=int, default=1, help="Random seed (default: 1)")
@@ -116,7 +117,13 @@ def log(msg):
 
 
 def kubectl_cmd(args):
-    return ["kubectl"] + (["--context", args.context] if args.context else [])
+    command = ["kubectl"]
+    kubeconfig = getattr(args, "kubeconfig", None)
+    if kubeconfig:
+        command += ["--kubeconfig", kubeconfig]
+    if args.context:
+        command += ["--context", args.context]
+    return command
 
 
 def gen_args(args, zones):

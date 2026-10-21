@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -49,6 +50,13 @@ type FilteredNodeWithMeta struct {
 	NodeStatus   infrastructurev1alpha1.NodeInstanceStatus
 }
 
+func resourceKey(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
+}
+
 func matchesLabelSelector(objectLabels map[string]string, selector *metav1.LabelSelector) bool {
 	if selector == nil {
 		return true
@@ -66,12 +74,15 @@ func matchesLabelSelector(objectLabels map[string]string, selector *metav1.Label
 	return labelSelector.Matches(labels.Set(objectLabels))
 }
 
-func (l *LocationManager) GetLocationByName(name string) (infrastructurev1alpha1.Location, error) {
+func (l *LocationManager) GetLocationByName(name string, scopes ...routingScope) (infrastructurev1alpha1.Location, error) {
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
+	if len(scopes) != 0 && !strings.Contains(name, "/") {
+		name = resourceKey(scopes[0].namespace, name)
+	}
 	location, exists := l.Locations[name]
-	if !exists {
+	if !exists || !matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) {
 		return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
 	}
 
@@ -130,7 +141,7 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 		}
 	}
 
-	locations_raw, err := l.Informer.GetIndexer().ByIndex("byParent", location.Name)
+	locations_raw, err := l.Informer.GetIndexer().ByIndex("byParent", resourceKey(location.Namespace, location.Name))
 	if err != nil {
 		log.Errorf("edgecdnx: failed to get child locations for location %s: %v", location.Name, err)
 	} else {
@@ -150,6 +161,9 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 			err = json.Unmarshal(temp, childLocation)
 			if err != nil {
 				log.Errorf("edgecdnx: failed to unmarshal child location object: %v", err)
+				continue
+			}
+			if scopeFor(childLocation.Namespace, childLocation.Spec.Project) != scopeFor(location.Namespace, location.Spec.Project) {
 				continue
 			}
 
@@ -267,12 +281,12 @@ func (l *LocationManager) FindMatchingTargetsWithWeights(ctx context.Context, ro
 	return l.findMatchingTargetsWithWeightsLocked(routeSelector)
 }
 
-func (l *LocationManager) findMatchingTargetsWithWeightsLocked(routeSelector *metav1.LabelSelector) []weightedTarget {
+func (l *LocationManager) findMatchingTargetsWithWeightsLocked(routeSelector *metav1.LabelSelector, scopes ...routingScope) []weightedTarget {
 	locations := make([]weightedTarget, 0)
 	selector := compileRouteSelector(routeSelector)
 
 	for locationName, location := range l.Locations {
-		if selector.Matches(labels.Set(location.Labels)) {
+		if matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) && selector.Matches(labels.Set(location.Labels)) {
 			locations = append(locations, weightedTarget{Name: locationName, Weight: location.Spec.Weight})
 		}
 	}
@@ -314,8 +328,9 @@ func (l *LocationManager) MatchesNodeGroupLabels(location string, selector *meta
 
 // setLocationLocked publishes current status but only invalidates targets for routing changes.
 func (l *LocationManager) setLocationLocked(location infrastructurev1alpha1.Location) {
-	previous, exists := l.Locations[location.Name]
-	l.Locations[location.Name] = location
+	key := resourceKey(location.Namespace, location.Name)
+	previous, exists := l.Locations[key]
+	l.Locations[key] = location
 	if !exists || !equality.Semantic.DeepEqual(previous.Labels, location.Labels) ||
 		!equality.Semantic.DeepEqual(previous.Spec, location.Spec) {
 		l.revision.Add(1)
@@ -352,7 +367,7 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 			}
 
 			if locationObj.Spec.Parent != "" {
-				return []string{locationObj.Spec.Parent}, nil
+				return []string{resourceKey(locationObj.Namespace, locationObj.Spec.Parent)}, nil
 			}
 			return []string{}, nil
 		},
@@ -438,7 +453,7 @@ func (locationMgr *LocationManager) locationEventHandlers() cache.ResourceEventH
 
 			locationMgr.Sync.Lock()
 			defer locationMgr.Sync.Unlock()
-			delete(locationMgr.Locations, location.Name)
+			delete(locationMgr.Locations, resourceKey(location.Namespace, location.Name))
 			locationMgr.revision.Add(1)
 			log.Infof("edgecdnx: Deleted Location %s", location.Name)
 		},

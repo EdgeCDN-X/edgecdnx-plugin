@@ -7,6 +7,7 @@ import (
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/miekg/dns"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -130,6 +131,46 @@ func TestServeDNSSimpleEndpointReturnsTXTTargets(t *testing.T) {
 	}
 	if len(answer.Txt) != 1 || answer.Txt[0] != "verification=value" {
 		t.Fatalf("TXT values = %v, want [verification=value]", answer.Txt)
+	}
+}
+
+func TestServeDNSDuplicateLocationNamesStayWithinTenant(t *testing.T) {
+	for _, policy := range []string{"RoundRobin", "Weighted", "Geolocation", "Failover"} {
+		t.Run(policy, func(t *testing.T) {
+			endpoint := infrastructurev1alpha1.DNSEndpoint{
+				ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+				Spec: infrastructurev1alpha1.DNSEndpointSpec{
+					Project: &corev1.LocalObjectReference{Name: "one"}, DNSName: "example.com", RecordType: "A", RoutingPolicy: policy,
+					Targets: []string{"edge"},
+				},
+			}
+			locations := newTestLocationManager(t)
+			locations.Config.RecordTTL = 60
+			for _, tenant := range []struct{ namespace, project, name, ip string }{
+				{"tenant-a", "one", "edge", "192.0.2.1"}, {"tenant-b", "one", "edge", "192.0.2.2"}, {"tenant-a", "two", "foreign", "192.0.2.3"},
+			} {
+				location := newTestLocation(tenant.name, nil, "", "node")
+				location.Namespace = tenant.namespace
+				location.Spec.Project = &corev1.LocalObjectReference{Name: tenant.project}
+				location.Spec.GeoLookup.Attributes = map[string]infrastructurev1alpha1.GeoLookupAttributeSpec{"default": {Weight: 1}}
+				location.Spec.NodeGroups[0].Nodes[0].Ipv4 = tenant.ip
+				locations.locationEventHandlers().AddFunc(testLocationObject(t, location))
+			}
+			prefixes := newTestPrefixListRoutingManager()
+			plugin := EdgeCDNX{DNSEndpointManager: newTestDNSEndpointManager(endpoint), LocationManager: &locations, PrefixListRoutingManager: &prefixes}
+			for range 4 {
+				request := new(dns.Msg)
+				request.SetQuestion("example.com.", dns.TypeA)
+				writer := &captureResponseWriter{testResponseWriter: testResponseWriter{remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353}}}
+				rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+				if err != nil || rcode != dns.RcodeSuccess || writer.msg == nil || len(writer.msg.Answer) != 1 {
+					t.Fatalf("ServeDNS failed: rcode=%d err=%v answer=%v", rcode, err, writer.msg)
+				}
+				if answer, ok := writer.msg.Answer[0].(*dns.A); !ok || answer.A.String() != "192.0.2.1" {
+					t.Fatalf("cross-tenant DNS answer: %v", writer.msg.Answer)
+				}
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,7 +30,7 @@ func newTestLocationManager(t *testing.T, locations ...infrastructurev1alpha1.Lo
 				return []string{}, err
 			}
 
-			return []string{parent}, nil
+			return []string{resourceKey(location.GetNamespace(), parent)}, nil
 		},
 	})
 
@@ -47,6 +48,31 @@ func newTestLocationManager(t *testing.T, locations ...infrastructurev1alpha1.Lo
 		Informer:  informer,
 		Sync:      &sync.RWMutex{},
 		Locations: make(map[string]infrastructurev1alpha1.Location),
+	}
+}
+
+func TestApplyHashScopesChildLocations(t *testing.T) {
+	parent := newTestLocation("parent", nil, "", "")
+	parent.Namespace = "tenant-a"
+	parent.Spec.Project = &corev1.LocalObjectReference{Name: "one"}
+	foreignNamespace := newTestLocation("child", nil, "parent", "foreign-namespace-node")
+	foreignNamespace.Namespace = "tenant-b"
+	foreignNamespace.Spec.Project = parent.Spec.Project
+	foreignProject := newTestLocation("child", nil, "parent", "foreign-project-node")
+	foreignProject.Namespace = "tenant-a"
+	foreignProject.Spec.Project = &corev1.LocalObjectReference{Name: "two"}
+	manager := newTestLocationManager(t, foreignNamespace, foreignProject)
+	if _, err := manager.ApplyHash(&parent, "example.com", HashFilters{}); err == nil {
+		t.Fatal("parent routed through a foreign tenant's child Location")
+	}
+	child := foreignProject.DeepCopy()
+	child.Spec.Project = parent.Spec.Project
+	object := testLocationObject(t, *child)
+	if err := manager.Informer.GetIndexer().Update(object); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ApplyHash(&parent, "example.com", HashFilters{}); err != nil {
+		t.Fatalf("same-tenant child was not available: %v", err)
 	}
 }
 

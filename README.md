@@ -18,6 +18,45 @@ It supports:
 
 ## DNSEndpoint Types
 
+### Namespace And Project Isolation
+
+The Corefile `namespace` directive is optional. When omitted, the shared informer
+factory watches Locations, PrefixLists, Zones, and DNSEndpoints in all namespaces.
+An explicit `namespace edgecdnx` restricts all four informers to that namespace.
+All-namespace mode requires cluster-wide `get`, `list`, and `watch` permissions
+for those CRDs, rather than a RoleBinding limited to one namespace.
+
+Locations are stored by namespace/name. The selected DNSEndpoint's namespace and
+`spec.project.name` constrain weighted, round-robin, geolocation, prefix routing,
+and failover selection. Parent, child, and fallback Location references resolve
+within that same namespace and Project. Prefix tables also include namespace and
+Project in their identity, so identical labels and CIDRs in different tenants do
+not collide. Label selectors still choose locations and node groups within the
+tenant; labels do not establish tenant ownership.
+
+Populate `spec.project.name` consistently on tenant resources. Legacy resources
+without a Project reference can match only other unowned resources in the same
+namespace; they do not match Project-owned resources. Missing references do not
+provide isolation between legacy tenants sharing one namespace.
+
+Kubernetes resource names can repeat across namespaces, but DNS queries carry no
+namespace or Project identifier. Each served Zone domain and each normalized
+DNSEndpoint `(DNS name, record type)` must therefore be unique across the resources
+watched by one plugin instance. Conflicting DNS identities return SERVFAIL rather
+than selecting an arbitrary tenant. Informer updates or deletions restore the
+remaining unambiguous owner automatically. Distinct record types for one DNS name
+are supported; multiple values of one type belong in a single endpoint's targets.
+
+For example, omit `namespace` to serve all tenant namespaces:
+
+```txt
+edgecdnx . {
+  soa ns1.example.com.
+  ns ns1.example.com.
+  recordttl 60
+}
+```
+
 DNSEndpoint lookups use an atomically published, immutable map snapshot and do not
 acquire the manager's shared mutex. Informer add, update, and delete events
 serialize writes, copy the map, and publish the replacement. Each event costs
@@ -367,7 +406,7 @@ Directives:
 
 | Directive | Required | Default | Description |
 | --- | --- | --- | --- |
-| `namespace` | Yes | none | Kubernetes namespace to watch for EdgeCDN-X CRDs. |
+| `namespace` | No | all namespaces | Restrict all EdgeCDN-X resource informers to one Kubernetes namespace when specified. |
 | `soa` | Yes | none | SOA MNAME used when crafting SOA records. A name without a trailing dot is relative to each zone; a trailing-dot name is absolute. |
 | `ns` | Recommended (repeatable) | empty | Adds an NS record for each served zone. Format: `ns <hostname>`. No glue A records are generated. |
 | `recordttl` | No | `60` | Fallback TTL for generated node answers when a DNSEndpoint does not specify one. |
@@ -478,8 +517,8 @@ At present, the counter is declared but not incremented in request handling code
 ### Startup panic or config errors
 
 - Validate required directives are set with arguments:
-  - `namespace`
   - `soa`
+- If `namespace` is present, supply exactly one valid Kubernetes namespace name; omit the directive to watch all namespaces.
 - Check each `ns` line has exactly 1 argument (the nameserver hostname).
 - Check `recordttl` is an integer.
 - Check response type values are one of `CNAME`, `A_AAAA`.

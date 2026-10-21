@@ -9,7 +9,7 @@ require (
 	github.com/coredns/coredns v1.14.1
 	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
-	google.golang.org/grpc v1.79.3
+	k8s.io/api v0.35.2
 	k8s.io/apimachinery v0.35.2
 	k8s.io/client-go v0.35.2
 	sigs.k8s.io/controller-runtime v0.23.3
@@ -73,10 +73,10 @@ require (
 	golang.org/x/tools v0.43.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260316180232-0b37fe3546d5 // indirect
+	google.golang.org/grpc v1.79.3 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/api v0.35.2 // indirect
 	k8s.io/apiextensions-apiserver v0.35.2 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
@@ -86,3 +86,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+
+replace github.com/EdgeCDN-X/edgecdnx-controller => ../edgecdnx-controller

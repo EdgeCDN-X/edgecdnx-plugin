@@ -1,6 +1,7 @@
 package edgecdnxplugin
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -33,6 +34,34 @@ func testDNSEndpointObject(t *testing.T, endpoint infrastructurev1alpha1.DNSEndp
 		t.Fatalf("convert DNSEndpoint: %v", err)
 	}
 	return &unstructured.Unstructured{Object: object}
+}
+
+func TestDNSEndpointDuplicateDNSIdentityFailsClosed(t *testing.T) {
+	manager := newTestDNSEndpointManager()
+	handlers := manager.endpointEventHandlers()
+	first := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "duplicate-name", Namespace: "tenant-a"},
+		Spec:       infrastructurev1alpha1.DNSEndpointSpec{DNSName: "example.com", RecordType: "A", RoutingPolicy: "Simple", Targets: []string{"192.0.2.1"}},
+	}
+	second := first.DeepCopy()
+	second.Namespace = "tenant-b"
+	second.Spec.Targets = []string{"192.0.2.2"}
+	handlers.AddFunc(testDNSEndpointObject(t, first))
+	handlers.AddFunc(testDNSEndpointObject(t, *second))
+	if _, err := manager.getDNSEndpoint("example.com", dns.TypeA); !errors.Is(err, errConflictingDNS) {
+		t.Fatalf("duplicate DNS identities must fail closed: %v", err)
+	}
+	handlers.DeleteFunc(testDNSEndpointObject(t, first))
+	endpoint, err := manager.GetDNSEndpoint("example.com", dns.TypeA)
+	if err != nil || endpoint.Namespace != "tenant-b" || endpoint.Spec.Targets[0] != "192.0.2.2" {
+		t.Fatalf("deleting one duplicate must restore the remaining owner: %+v %v", endpoint, err)
+	}
+	second.Spec.DNSName = "other.example.com"
+	handlers.AddFunc(testDNSEndpointObject(t, first))
+	handlers.UpdateFunc(testDNSEndpointObject(t, endpoint), testDNSEndpointObject(t, *second))
+	if endpoint, err := manager.GetDNSEndpoint("example.com", dns.TypeA); err != nil || endpoint.Namespace != "tenant-a" {
+		t.Fatalf("namespace/name identity was confused with DNS identity: %+v %v", endpoint, err)
+	}
 }
 
 func TestDNSEndpointSnapshotEvents(t *testing.T) {

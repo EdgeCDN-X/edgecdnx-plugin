@@ -70,6 +70,25 @@ func newTestRequest(sourceIP string) request.Request {
 	}
 }
 
+func TestPrefixRoutingTablesStayWithinTenant(t *testing.T) {
+	manager := newTestPrefixListRoutingManager()
+	scopes := []routingScope{{namespace: "tenant-a", project: "one"}, {namespace: "tenant-b", project: "one"}, {namespace: "tenant-a", project: "two"}}
+	_, prefix, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range scopes {
+		table := manager.routingTableFor(map[string]string{"role": "edge"}, scope)
+		table.RoutingV4.Add(PrefixTreeEntry{Location: scope.namespace + "-" + scope.project, Prefix: *prefix})
+	}
+	for _, scope := range scopes {
+		routed, location := manager.IsPrefixRouted(newTestRequest("10.1.2.3"), nil, scope)
+		if !routed || location != scope.namespace+"-"+scope.project {
+			t.Fatalf("scope %+v routed to foreign Location %q", scope, location)
+		}
+	}
+}
+
 func TestPrefixListLabelKeySortsLabels(t *testing.T) {
 	labels := map[string]string{
 		"tenant": "acme",

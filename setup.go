@@ -8,6 +8,8 @@ import (
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
@@ -47,7 +49,8 @@ func setup(c *caddy.Controller) error {
 
 	log.Infof("edgecdnx: Origins: %v", origins)
 
-	var namespace, soa string // Base Zone configuration
+	namespace := metav1.NamespaceAll
+	var soa string
 	var ns []NSRecord = make([]NSRecord, 0)
 	var recordttl uint32 = 60
 
@@ -55,7 +58,11 @@ func setup(c *caddy.Controller) error {
 		val := c.Val()
 		args := c.RemainingArgs()
 		if val == "namespace" {
-			namespace = args[0]
+			var err error
+			namespace, err = parseNamespace(args)
+			if err != nil {
+				return plugin.Error("edgecdnx", err)
+			}
 		}
 		if val == "soa" {
 			soa = args[0]
@@ -93,6 +100,9 @@ func setup(c *caddy.Controller) error {
 	}
 
 	fac := dynamicinformer.NewFilteredDynamicSharedInformerFactory(clientSet, 10*time.Minute, namespace, nil)
+	if namespace == metav1.NamespaceAll {
+		log.Infof("edgecdnx: Watching resources in all namespaces")
+	}
 
 	zoneManager := NewZoneManager(fac, ZoneManagerConfiguration{
 		Namespace: namespace,
@@ -136,4 +146,14 @@ func setup(c *caddy.Controller) error {
 	})
 
 	return nil
+}
+
+func parseNamespace(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("expected 1 argument for namespace, got %d", len(args))
+	}
+	if problems := validation.IsDNS1123Label(args[0]); len(problems) != 0 {
+		return "", fmt.Errorf("invalid namespace %q: %v", args[0], problems)
+	}
+	return args[0], nil
 }

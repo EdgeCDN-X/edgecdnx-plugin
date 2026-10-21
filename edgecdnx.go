@@ -2,6 +2,7 @@ package edgecdnxplugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -110,12 +111,19 @@ func (e EdgeCDNX) BuildSimpleResponse(dnsEndpoint infrastructurev1alpha1.DNSEndp
 func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 	qname := state.Name()
+	if e.ZoneManager != nil && e.ZoneManager.hasConflict(qname) {
+		return dns.RcodeServerFailure, fmt.Errorf("%w for zone containing %s", errConflictingDNS, qname)
+	}
 
 	// Fetch DNS Endpoint first
 	dnsEndpoint, dnsEndpointErr := e.DNSEndpointManager.getDNSEndpoint(qname, state.QType())
+	if errors.Is(dnsEndpointErr, errConflictingDNS) {
+		return dns.RcodeServerFailure, dnsEndpointErr
+	}
 
 	// Main Routing Component
 	if dnsEndpointErr == nil {
+		scope := scopeFor(dnsEndpoint.Namespace, dnsEndpoint.Spec.Project)
 		targetLocation := ""
 		switch strings.ToLower(dnsEndpoint.Spec.RoutingPolicy) {
 
@@ -147,7 +155,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			targetLocation = dnsEndpoint.Spec.Targets[0]
 		case "geolocation":
 			// Geolocation for checks available Prefix routed endpoints
-			prefixRouted, matchedLocation := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector)
+			prefixRouted, matchedLocation := e.PrefixListRoutingManager.IsPrefixRouted(state, dnsEndpoint.Spec.RouteSelector, scope)
 
 			if !prefixRouted {
 				geoLookupLocation, geoLookupErr := dnsEndpoint.matchingGeoCandidates(e.LocationManager).lookup(ctx)
@@ -164,7 +172,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
-		location, err := e.LocationManager.GetLocationByName(targetLocation)
+		location, err := e.LocationManager.GetLocationByName(targetLocation, scope)
 		if err != nil {
 			log.Error(fmt.Sprintf("edgecdnx: Location not found - %v", err))
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
@@ -185,13 +193,13 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 			if location.Spec.Parent != "" {
 				// If a parent location is specified, attempt to route to the parent location
-				parentLocation, err := e.LocationManager.GetLocationByName(location.Spec.Parent)
+				parentLocation, err := e.LocationManager.GetLocationByName(location.Spec.Parent, scope)
 				log.Debug(fmt.Sprintf("edgecdnx: Falling back to parent location %s", location.Spec.Parent))
 				if err != nil {
 					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", location.Spec.Parent))
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
-				if !e.LocationManager.MatchesNodeGroupLabels(parentLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+				if !e.LocationManager.MatchesNodeGroupLabels(resourceKey(parentLocation.Namespace, parentLocation.Name), dnsEndpoint.Spec.RouteSelector) {
 					log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s", parentLocation.Name, dnsEndpoint.Name)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
@@ -208,13 +216,13 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			}
 
 			for _, fbLoc := range location.Spec.FallbackLocations {
-				fallBackLocation, err := e.LocationManager.GetLocationByName(fbLoc)
+				fallBackLocation, err := e.LocationManager.GetLocationByName(fbLoc, scope)
 				log.Debug(fmt.Sprintf("edgecdnx: Falling back to location %s", fbLoc))
 				if err != nil {
 					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", fbLoc))
 					continue
 				}
-				if !e.LocationManager.MatchesNodeGroupLabels(fallBackLocation.Name, dnsEndpoint.Spec.RouteSelector) {
+				if !e.LocationManager.MatchesNodeGroupLabels(resourceKey(fallBackLocation.Namespace, fallBackLocation.Name), dnsEndpoint.Spec.RouteSelector) {
 					log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s", fbLoc, dnsEndpoint.Name)
 					continue
 				}
