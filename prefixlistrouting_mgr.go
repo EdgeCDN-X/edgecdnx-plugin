@@ -26,10 +26,11 @@ type PrefixListRoutingManagerConfiguration struct {
 }
 
 type PrefixListRoutingManager struct {
-	fac           dynamicinformer.DynamicSharedInformerFactory
-	Informer      cache.SharedIndexInformer
-	Sync          *sync.RWMutex
-	RoutingTables map[string]*PrefixRoutingTable
+	fac                 dynamicinformer.DynamicSharedInformerFactory
+	Informer            cache.SharedIndexInformer
+	HandlerRegistration cache.ResourceEventHandlerRegistration
+	Sync                *sync.RWMutex
+	RoutingTables       map[string]*PrefixRoutingTable
 }
 
 type PrefixRoutingTable struct {
@@ -242,7 +243,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 		Resource: "prefixlists",
 	}).Informer()
 
-	prefixListInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	registration, err := prefixListInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			p_raw, ok := obj.(*unstructured.Unstructured)
 			if !ok {
@@ -287,7 +288,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					Prefix:   *ipnet,
 				})
 			}
-			log.Infof("edgecdnxprefixlist: Added PrefixList %s", prefixList.Name)
+			log.Infof("edgecdnxprefixlist: Added PrefixList %s/%s", prefixList.Namespace, prefixList.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			p_old_raw, ok := oldObj.(*unstructured.Unstructured)
@@ -378,7 +379,7 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 					Prefix:   *ipnet,
 				})
 			}
-			log.Infof("edgecdnxprefixlist: Updated PrefixList %s", newPrefixList.Name)
+			log.Infof("edgecdnxprefixlist: Updated PrefixList %s/%s", newPrefixList.Namespace, newPrefixList.Name)
 		},
 		DeleteFunc: func(obj any) {
 			p_raw, ok := obj.(*unstructured.Unstructured)
@@ -426,9 +427,14 @@ func NewPrefixListRoutingManager(factory dynamicinformer.DynamicSharedInformerFa
 				})
 			}
 			prefixListMgr.removeRoutingTableIfEmpty(prefixList.Labels, scopeFor(prefixList.Namespace, prefixList.Spec.Project))
-			log.Infof("edgecdnxprefixlist: Deleted PrefixList %s", prefixList.Name)
+			log.Infof("edgecdnxprefixlist: Deleted PrefixList %s/%s", prefixList.Namespace, prefixList.Name)
 		},
 	})
+	if err != nil {
+		log.Errorf("edgecdnx: failed to register PrefixList event handler: %v", err)
+	} else {
+		prefixListMgr.HandlerRegistration = registration
+	}
 
 	prefixListMgr.Informer = prefixListInformer
 

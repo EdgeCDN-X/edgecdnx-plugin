@@ -3,7 +3,7 @@ module github.com/EdgeCDN-X/edgecdnx-plugin
 go 1.25.0
 
 require (
-	github.com/EdgeCDN-X/edgecdnx-controller v0.35.1
+	github.com/EdgeCDN-X/edgecdnx-controller v1.0.0
 	github.com/ancientlore/go-avltree v1.0.3
 	github.com/coredns/caddy v1.1.4
 	github.com/coredns/coredns v1.14.1
@@ -86,6 +86,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-
-replace github.com/EdgeCDN-X/edgecdnx-controller => ../edgecdnx-controller

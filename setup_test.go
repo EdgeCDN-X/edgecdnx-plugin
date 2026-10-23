@@ -72,6 +72,23 @@ func TestInformerNamespaceSelection(t *testing.T) {
 			if namespace == metav1.NamespaceAll {
 				want = 2
 			}
+			plugin := EdgeCDNX{
+				ZoneManager: zones, DNSEndpointManager: endpoints,
+				PrefixListRoutingManager: prefixes, LocationManager: locations,
+			}
+			if !cache.WaitForCacheSync(ctx.Done(), plugin.Ready) {
+				t.Fatal("plugin readiness did not wait for all informer handlers to sync")
+			}
+			if got := len(locations.Locations); got != want {
+				t.Fatalf("location handler loaded %d objects, want %d", got, want)
+			}
+			locationRegistration := locations.HandlerRegistration
+			locations.HandlerRegistration = nil
+			if plugin.Ready() {
+				t.Fatal("plugin reported ready without the Location event handler")
+			}
+			locations.HandlerRegistration = locationRegistration
+
 			for _, informer := range []cache.SharedIndexInformer{locations.Informer, prefixes.Informer, zones.Informer, endpoints.Informer} {
 				if got := len(informer.GetStore().List()); got != want {
 					t.Fatalf("informer watched %d resources, want %d", got, want)

@@ -299,6 +299,30 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all("routingPolicy: Simple" in doc
                             for doc in legacy if "kind: DNSEndpoint" in doc))
 
+    def test_every_generated_cr_spec_has_project(self):
+        for policy in ("Simple", "Weighted", "Geolocation"):
+            with self.subTest(policy=policy):
+                args = options(policy, zones=1)
+                args.namespace = "load-test"
+                args.project = "edge-project"
+                docs, _, _ = generate(args)
+                resources = [doc for doc in docs if re.search(r"^kind: (Zone|DNSEndpoint|Location)$", doc, re.MULTILINE)]
+                self.assertTrue(any("kind: Zone\n" in doc for doc in resources))
+                self.assertTrue(any("kind: DNSEndpoint\n" in doc for doc in resources))
+                if policy != "Simple":
+                    self.assertTrue(any("kind: Location\n" in doc for doc in resources))
+                for doc in resources:
+                    self.assertIn("spec:\n  project:\n    name: edge-project\n", doc)
+
+    def test_generator_project_defaults_to_namespace_and_can_be_overridden(self):
+        for argv, expected in (
+            (["generate_zones.py", "--zones", "1", "--namespace", "load-test"], "load-test"),
+            (["generate_zones.py", "--zones", "1", "--namespace", "load-test", "--project", "edge-project"], "edge-project"),
+        ):
+            with self.subTest(argv=argv), patch("sys.argv", argv):
+                args = gz.parse_args()
+            self.assertEqual(args.project, expected)
+
     def test_weighted_per_type_counts(self):
         for policy in ("Weighted", "Geolocation"):
             with self.subTest(policy=policy):
@@ -327,6 +351,14 @@ class GeneratorTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_runner_project_defaults_to_namespace_and_can_be_overridden(self):
+        for extra, expected in (([], "load-test"), (["--project", "edge-project"], "edge-project")):
+            argv = ["test-simple.py", "--namespace", "load-test", *extra]
+            with self.subTest(argv=argv), patch("sys.argv", argv):
+                args = runner.parse_args()
+            self.assertEqual(args.project, expected)
+            self.assertEqual(runner.gen_args(args, 1).project, expected)
+
     def test_kubectl_command_pins_kubeconfig_and_context(self):
         with patch("sys.argv", [
             "test-simple.py", "--kubeconfig", "/tmp/upstream.kubeconfig", "--context", "kind-edgecdnx",

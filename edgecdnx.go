@@ -93,7 +93,7 @@ func (e EdgeCDNX) BuildSimpleResponse(dnsEndpoint infrastructurev1alpha1.DNSEndp
 	for _, target := range dnsEndpoint.Spec.Targets {
 		record, err := dns.NewRR(fmt.Sprintf("%s %d IN %s %s", state.Name(), dnsEndpoint.Spec.RecordTTL, dnsEndpoint.Spec.RecordType, target))
 		if err != nil {
-			log.Errorf("edgecdnx: invalid target %q for DNSEndpoint %s: %v", target, dnsEndpoint.Name, err)
+			log.Errorf("edgecdnx: invalid target %q for DNSEndpoint %s/%s: %v", target, dnsEndpoint.Namespace, dnsEndpoint.Name, err)
 			return dns.RcodeServerFailure, err
 		}
 		m.Answer = append(m.Answer, record)
@@ -133,7 +133,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		case "roundrobin":
 			locations := dnsEndpoint.matchingLocationTargets(e.LocationManager)
 			if len(locations) == 0 {
-				log.Debugf("edgecdnx: No matching locations found for roundrobin routing of DNSEndpoint %s", dnsEndpoint.Name)
+				log.Debugf("edgecdnx: No matching locations found for roundrobin routing of DNSEndpoint %s/%s", dnsEndpoint.Namespace, dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 			targetIdx := dnsEndpoint.getNext(len(locations))
@@ -141,7 +141,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		case "weighted":
 			locations := dnsEndpoint.matchingLocationTargets(e.LocationManager)
 			if len(locations) == 0 {
-				log.Debugf("edgecdnx: No matching locations found for weighted routing of DNSEndpoint %s", dnsEndpoint.Name)
+				log.Debugf("edgecdnx: No matching locations found for weighted routing of DNSEndpoint %s/%s", dnsEndpoint.Namespace, dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 			targetIdx := dnsEndpoint.getWeightedNext(locations)
@@ -149,7 +149,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		case "failover":
 			// Selects Primary target. Primary target fails over to the next if unavailable
 			if len(dnsEndpoint.Spec.Targets) == 0 {
-				log.Debugf("edgecdnx: No primary target specified for failover routing of DNSEndpoint %s", dnsEndpoint.Name)
+				log.Debugf("edgecdnx: No primary target specified for failover routing of DNSEndpoint %s/%s", dnsEndpoint.Namespace, dnsEndpoint.Name)
 				return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 			}
 			targetLocation = dnsEndpoint.Spec.Targets[0]
@@ -160,7 +160,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			if !prefixRouted {
 				geoLookupLocation, geoLookupErr := dnsEndpoint.matchingGeoCandidates(e.LocationManager).lookup(ctx)
 				if geoLookupErr != nil {
-					log.Errorf("edgecdnx: GeoLookup failed: %v", geoLookupErr)
+					log.Errorf("edgecdnx: GeoLookup failed for DNSEndpoint %s/%s: %v", dnsEndpoint.Namespace, dnsEndpoint.Name, geoLookupErr)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
 				targetLocation = geoLookupLocation
@@ -168,7 +168,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				targetLocation = matchedLocation
 			}
 		default:
-			log.Warningf("edgecdnx: unsupported routing policy %q for DNSEndpoint %s", dnsEndpoint.Spec.RoutingPolicy, dnsEndpoint.Name)
+			log.Warningf("edgecdnx: unsupported routing policy %q for DNSEndpoint %s/%s", dnsEndpoint.Spec.RoutingPolicy, dnsEndpoint.Namespace, dnsEndpoint.Name)
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
@@ -178,7 +178,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
-		log.Debug(fmt.Sprintf("edgecdnx: Routing to location: %s\n", location.Name))
+		log.Debug(fmt.Sprintf("edgecdnx: Routing to location: %s/%s\n", location.Namespace, location.Name))
 
 		// Filter filters on additional node labels if routeSelector is present
 		filter := HashFilters{
@@ -189,7 +189,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 		node, err := e.LocationManager.ApplyHash(&location, state.Name(), filter)
 		if err != nil {
-			log.Debug(fmt.Sprintf("edgecdnx: Hashing error - %v", err))
+			log.Debug(fmt.Sprintf("edgecdnx: Hashing error for DNSEndpoint %s/%s - %v", dnsEndpoint.Namespace, dnsEndpoint.Name, err))
 
 			if location.Spec.Parent != "" {
 				// If a parent location is specified, attempt to route to the parent location
@@ -200,7 +200,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
 				if !e.LocationManager.MatchesNodeGroupLabels(resourceKey(parentLocation.Namespace, parentLocation.Name), dnsEndpoint.Spec.RouteSelector) {
-					log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s", parentLocation.Name, dnsEndpoint.Name)
+					log.Debugf("edgecdnx: Parent location %s does not match routeSelector for DNSEndpoint %s/%s", parentLocation.Name, dnsEndpoint.Namespace, dnsEndpoint.Name)
 					return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 				}
 
@@ -223,7 +223,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 					continue
 				}
 				if !e.LocationManager.MatchesNodeGroupLabels(resourceKey(fallBackLocation.Namespace, fallBackLocation.Name), dnsEndpoint.Spec.RouteSelector) {
-					log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s", fbLoc, dnsEndpoint.Name)
+					log.Debugf("edgecdnx: Fallback location %s does not match routeSelector for DNSEndpoint %s/%s", fbLoc, dnsEndpoint.Namespace, dnsEndpoint.Name)
 					continue
 				}
 				node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)

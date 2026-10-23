@@ -30,12 +30,13 @@ type LocationManagerConfiguration struct {
 }
 
 type LocationManager struct {
-	fac       dynamicinformer.DynamicSharedInformerFactory
-	Informer  cache.SharedIndexInformer
-	Sync      *sync.RWMutex
-	Locations map[string]infrastructurev1alpha1.Location
-	Config    LocationManagerConfiguration
-	revision  atomic.Uint64
+	fac                 dynamicinformer.DynamicSharedInformerFactory
+	Informer            cache.SharedIndexInformer
+	HandlerRegistration cache.ResourceEventHandlerRegistration
+	Sync                *sync.RWMutex
+	Locations           map[string]infrastructurev1alpha1.Location
+	Config              LocationManagerConfiguration
+	revision            atomic.Uint64
 }
 
 type HashFilters struct {
@@ -347,9 +348,14 @@ func NewLocationManager(factory dynamicinformer.DynamicSharedInformerFactory, co
 
 	locationInformer := locationMgr.fac.ForResource(infrastructurev1alpha1.SchemeGroupVersion.WithResource("locations")).Informer()
 
-	locationInformer.AddEventHandler(locationMgr.locationEventHandlers())
+	registration, err := locationInformer.AddEventHandler(locationMgr.locationEventHandlers())
+	if err != nil {
+		log.Errorf("edgecdnx: failed to register Location event handler: %v", err)
+	} else {
+		locationMgr.HandlerRegistration = registration
+	}
 
-	err := locationInformer.GetIndexer().AddIndexers(cache.Indexers{
+	err = locationInformer.GetIndexer().AddIndexers(cache.Indexers{
 		"byParent": func(obj any) ([]string, error) {
 			location, ok := obj.(*unstructured.Unstructured)
 			if !ok {
@@ -405,7 +411,7 @@ func (locationMgr *LocationManager) locationEventHandlers() cache.ResourceEventH
 			locationMgr.Sync.Lock()
 			defer locationMgr.Sync.Unlock()
 			locationMgr.setLocationLocked(*location)
-			log.Infof("edgecdnx: Added Location %s", location.Name)
+			log.Infof("edgecdnx: Added Location %s/%s", location.Namespace, location.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			s_new_raw, ok := newObj.(*unstructured.Unstructured)
@@ -427,7 +433,7 @@ func (locationMgr *LocationManager) locationEventHandlers() cache.ResourceEventH
 			locationMgr.Sync.Lock()
 			defer locationMgr.Sync.Unlock()
 			locationMgr.setLocationLocked(*location)
-			log.Infof("edgecdnx: Updated Location %s", location.Name)
+			log.Infof("edgecdnx: Updated Location %s/%s", location.Namespace, location.Name)
 		},
 		DeleteFunc: func(obj any) {
 			if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
@@ -455,7 +461,7 @@ func (locationMgr *LocationManager) locationEventHandlers() cache.ResourceEventH
 			defer locationMgr.Sync.Unlock()
 			delete(locationMgr.Locations, resourceKey(location.Namespace, location.Name))
 			locationMgr.revision.Add(1)
-			log.Infof("edgecdnx: Deleted Location %s", location.Name)
+			log.Infof("edgecdnx: Deleted Location %s/%s", location.Namespace, location.Name)
 		},
 	}
 }

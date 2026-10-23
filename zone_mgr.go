@@ -19,13 +19,14 @@ import (
 )
 
 type ZoneManager struct {
-	fac       dynamicinformer.DynamicSharedInformerFactory
-	Informer  cache.SharedIndexInformer
-	Sync      *sync.RWMutex
-	Zones     []string
-	Records   map[string][]dns.RR
-	sources   map[string]*infrastructurev1alpha1.Zone
-	conflicts map[string]bool
+	fac                 dynamicinformer.DynamicSharedInformerFactory
+	Informer            cache.SharedIndexInformer
+	HandlerRegistration cache.ResourceEventHandlerRegistration
+	Sync                *sync.RWMutex
+	Zones               []string
+	Records             map[string][]dns.RR
+	sources             map[string]*infrastructurev1alpha1.Zone
+	conflicts           map[string]bool
 }
 
 type ZoneManagerConfiguration struct {
@@ -83,7 +84,12 @@ func NewZoneManager(factory dynamicinformer.DynamicSharedInformerFactory, config
 
 	log.Infof("edgecdnx: Watching Zones in namespace %s", config.Namespace)
 
-	zoneInformer.AddEventHandler(zm.zoneEventHandlers(config))
+	registration, err := zoneInformer.AddEventHandler(zm.zoneEventHandlers(config))
+	if err != nil {
+		log.Errorf("edgecdnx: failed to register Zone event handler: %v", err)
+	} else {
+		zm.HandlerRegistration = registration
+	}
 
 	zm.Informer = zoneInformer
 

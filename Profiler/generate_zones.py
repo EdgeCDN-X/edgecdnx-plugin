@@ -105,6 +105,7 @@ def parse_args():
     p.add_argument("--max-targets", type=int, default=3,
                    help="Maximum number of targets per A/AAAA record (default: 3)")
     p.add_argument("-n", "--namespace", default="edgecdnx", help="Target namespace (default: edgecdnx)")
+    p.add_argument("--project", help="Project name for generated CR specs (default: same as --namespace)")
     p.add_argument("--zone-suffix", default="profiler.test",
                    help="Parent domain for generated zones (default: profiler.test)")
     p.add_argument("--zone-prefix", default="zone", help="Prefix for zone labels (default: zone)")
@@ -122,6 +123,8 @@ def parse_args():
     add_geo_options(p)
     args = p.parse_args()
 
+    if args.project is None:
+        args.project = args.namespace
     if args.delete:
         return args
     if args.zones is None:
@@ -149,7 +152,8 @@ def random_ipv6(rng):
     return str(IPV6_NET[rng.randint(1, 2**64)])
 
 
-def zone_manifest(name, zone, namespace):
+def zone_manifest(name, zone, namespace, project=None):
+    project = project or namespace
     return (
         "---\n"
         f"apiVersion: {API_VERSION}\n"
@@ -160,13 +164,16 @@ def zone_manifest(name, zone, namespace):
         "  labels:\n"
         f"    {LABEL_KEY}: \"true\"\n"
         "spec:\n"
+        "  project:\n"
+        f"    name: {project}\n"
         f"  zone: {zone}\n"
         f"  email: noc.{zone}.\n"
     )
 
 
 def endpoint_manifest(name, namespace, zone_name, dns_name, record_type, ttl, targets,
-                      routing_policy="Simple"):
+                      routing_policy="Simple", project=None):
+    project = project or namespace
     targets_yaml = "".join(f"    - \"{t}\"\n" for t in targets)
     return (
         "---\n"
@@ -179,6 +186,8 @@ def endpoint_manifest(name, namespace, zone_name, dns_name, record_type, ttl, ta
         f"    {LABEL_KEY}: \"true\"\n"
         f"    profiler.edgecdnx.com/zone: {zone_name}\n"
         "spec:\n"
+        "  project:\n"
+        f"    name: {project}\n"
         f"  dnsName: {dns_name}\n"
         f"  routingPolicy: {routing_policy}\n"
         f"  recordTTL: {ttl}\n"
@@ -213,6 +222,8 @@ def location_manifest(args, index, weight, zone_name, endpoint_name):
         f"    dnsendpoint: {endpoint_name}\n"
         f"    edgecdnx.com/routing-instance: {args.routing_instance}\n"
         "spec:\n"
+        "  project:\n"
+        f"    name: {getattr(args, 'project', None) or args.namespace}\n"
         f"  weight: {weight}\n"
         "  nodeGroups:\n"
         "    - name: default\n"
@@ -257,6 +268,8 @@ def geo_location_manifest(args, index, weight, zone_name, endpoint_name):
         f"    dnsendpoint: {endpoint_name}\n"
         f"    edgecdnx.com/routing-instance: {args.routing_instance}\n"
         "spec:\n"
+        "  project:\n"
+        f"    name: {getattr(args, 'project', None) or args.namespace}\n"
         "  geoLookup:\n"
         f"    weight: {weight}\n"
         "    attributes:\n"
@@ -292,12 +305,13 @@ def generate(args, rng, stats, records=None, start=1):
     """
     width = max(args.name_width, len(str(args.zones)))
     policy = getattr(args, "routing_policy", "Simple")
+    project = getattr(args, "project", None) or args.namespace
     for zi in range(1, args.zones + 1):
         emit = zi >= start
         zone_label = f"{args.zone_prefix}-{zi:0{width}d}"
         zone = f"{zone_label}.{args.zone_suffix}"
         if emit:
-            yield zone_manifest(zone, zone, args.namespace)
+            yield zone_manifest(zone, zone, args.namespace, project)
             stats["zones"] += 1
 
         counts = record_counts(args, rng)
@@ -323,7 +337,7 @@ def generate(args, rng, stats, records=None, start=1):
                         stats["locations"] = stats.get("locations", 0) + 1
                 yield endpoint_manifest(
                     endpoint_name, args.namespace, zone, fqdn, rtype, args.ttl, targets,
-                    routing_policy=policy,
+                    routing_policy=policy, project=project,
                 )
                 stats[rtype] += 1
                 if records is not None:
@@ -337,7 +351,8 @@ def generate(args, rng, stats, records=None, start=1):
             if not emit:
                 continue
             yield endpoint_manifest(
-                f"{zone_label}-{host}", args.namespace, zone, fqdn, "CNAME", args.ttl, [f"{target}."]
+                f"{zone_label}-{host}", args.namespace, zone, fqdn, "CNAME", args.ttl, [f"{target}."],
+                project=project,
             )
             stats["CNAME"] += 1
             if records is not None:

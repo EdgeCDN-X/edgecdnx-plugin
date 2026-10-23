@@ -62,6 +62,7 @@ def parse_args(routing_policy="Simple"):
     p.add_argument("--sync-timeout", type=int, default=600,
                    help="Max seconds to wait for the plugin to serve new records (default: 600)")
     p.add_argument("-n", "--namespace", default="edgecdnx", help="Namespace (default: edgecdnx)")
+    p.add_argument("--project", help="Project name for generated CR specs (default: same as --namespace)")
     p.add_argument("--kubeconfig", help="Kubeconfig file to pin kubectl to (independent of the active context in other terminals)")
     p.add_argument("--context", help="kubectl context within the selected kubeconfig")
     p.add_argument("--apply-workers", type=int, default=8, help="Parallel kubectl apply processes (default: 8)")
@@ -109,6 +110,8 @@ def parse_args(routing_policy="Simple"):
             if not subnet.is_global:
                 p.error(f"--{option.replace('_', '-')} must be a public IPv4 network")
             setattr(args, option, subnet)
+    if args.project is None:
+        args.project = args.namespace
     return args
 
 
@@ -130,6 +133,7 @@ def gen_args(args, zones):
     return SimpleNamespace(
         zones=zones, min_records=args.min_records, max_records=args.max_records, total=True,
         name_width=len(str(args.steps[-1])), max_targets=3, namespace=args.namespace,
+        project=getattr(args, "project", None) or args.namespace,
         zone_suffix="profiler.test", zone_prefix="zone", ttl=60,
         routing_policy=args.routing_policy,
         location_weights=getattr(args, "location_weights", []),

@@ -29,11 +29,12 @@ type DNSEndpointManagerConfiguration struct {
 }
 
 type DNSEndpointManager struct {
-	fac       dynamicinformer.DynamicSharedInformerFactory
-	Informer  cache.SharedIndexInformer
-	Sync      *sync.RWMutex
-	endpoints atomic.Pointer[dnsEndpointSnapshot]
-	sources   map[string]*infrastructurev1alpha1.DNSEndpoint
+	fac                 dynamicinformer.DynamicSharedInformerFactory
+	Informer            cache.SharedIndexInformer
+	HandlerRegistration cache.ResourceEventHandlerRegistration
+	Sync                *sync.RWMutex
+	endpoints           atomic.Pointer[dnsEndpointSnapshot]
+	sources             map[string]*infrastructurev1alpha1.DNSEndpoint
 }
 
 // Published snapshots and their endpoint configuration must never be mutated.
@@ -329,7 +330,12 @@ func NewDNSEndpointManager(factory dynamicinformer.DynamicSharedInformerFactory,
 
 	log.Infof("edgecdnx: Watching DNSEndpoints in namespace %s", config.Namespace)
 
-	dnsEndpointInformer.AddEventHandler(dm.endpointEventHandlers())
+	registration, err := dnsEndpointInformer.AddEventHandler(dm.endpointEventHandlers())
+	if err != nil {
+		log.Errorf("edgecdnx: failed to register DNSEndpoint event handler: %v", err)
+	} else {
+		dm.HandlerRegistration = registration
+	}
 	dm.Informer = dnsEndpointInformer
 
 	return dm
@@ -347,7 +353,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
 			dm.updateEndpointSources(nil, dnsEndpoint)
-			log.Infof("edgecdnx: Added DNSEndpoint %s", dnsEndpoint.Name)
+			log.Infof("edgecdnx: Added DNSEndpoint %s/%s", dnsEndpoint.Namespace, dnsEndpoint.Name)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			oldDNSEndpoint, err := dnsEndpointFromObject(oldObj)
@@ -364,7 +370,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
 			dm.updateEndpointSources(oldDNSEndpoint, newDNSEndpoint)
-			log.Infof("edgecdnx: Updated DNSEndpoint %s", newDNSEndpoint.Name)
+			log.Infof("edgecdnx: Updated DNSEndpoint %s/%s", newDNSEndpoint.Namespace, newDNSEndpoint.Name)
 		},
 		DeleteFunc: func(obj any) {
 			dnsEndpoint, err := dnsEndpointFromObject(obj)
@@ -376,7 +382,7 @@ func (dm *DNSEndpointManager) endpointEventHandlers() cache.ResourceEventHandler
 			dm.Sync.Lock()
 			defer dm.Sync.Unlock()
 			dm.updateEndpointSources(dnsEndpoint, nil)
-			log.Infof("edgecdnx: Deleted DNSEndpoint %s", dnsEndpoint.Name)
+			log.Infof("edgecdnx: Deleted DNSEndpoint %s/%s", dnsEndpoint.Namespace, dnsEndpoint.Name)
 		},
 	}
 }
