@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"regexp"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var nodeLocationEndpointPattern = regexp.MustCompile(`^([^.]+)\.([^.]+)\.node\.(.+)\.$`)
@@ -29,24 +27,6 @@ type EdgeCDNX struct {
 }
 
 type EdgeCDNXResponseWriter struct {
-}
-
-func findNodeInLocation(location infrastructurev1alpha1.Location, nodeName string, selector *metav1.LabelSelector) (infrastructurev1alpha1.NodeSpec, error) {
-	for _, nodeGroup := range location.Spec.NodeGroups {
-		fullLabels := make(map[string]string)
-		maps.Copy(fullLabels, location.Labels)
-		maps.Copy(fullLabels, nodeGroup.Labels)
-		if !matchesLabelSelector(fullLabels, selector) {
-			continue
-		}
-		for _, node := range nodeGroup.Nodes {
-			if node.Name == nodeName {
-				return node, nil
-			}
-		}
-	}
-
-	return infrastructurev1alpha1.NodeSpec{}, fmt.Errorf("node %s not found in location %s", nodeName, location.Name)
 }
 
 func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, ttl uint32, w dns.ResponseWriter, r *dns.Msg) (int, error) {

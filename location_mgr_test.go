@@ -163,6 +163,23 @@ func TestApplyHashMatchesNodeGroupLabelsInsteadOfName(t *testing.T) {
 	}
 }
 
+func TestApplyHashRejectsFailingConditionWithoutStack(t *testing.T) {
+	for _, qtype := range []uint16{1, 28} { // A and AAAA
+		location := newTestLocation("location", nil, "", "node")
+		location.Status.NodeStatus["node"] = infrastructurev1alpha1.NodeInstanceStatus{
+			Conditions: []infrastructurev1alpha1.NodeCondition{{
+				Type:   infrastructurev1alpha1.HealthCheckSuccessful,
+				Status: false,
+			}},
+		}
+
+		manager := newTestLocationManager(t)
+		if _, err := manager.ApplyHash(&location, "example.com.", HashFilters{Qtype: qtype}); err == nil {
+			t.Fatalf("qtype %d: expected failing condition without a stack to mark the node unhealthy", qtype)
+		}
+	}
+}
+
 func TestFindMatchingTargetsReturnsSortedLocationNames(t *testing.T) {
 	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
 	locC := newTestLocation("loc-c", map[string]string{"tenant": "acme"}, "", "")
