@@ -198,11 +198,13 @@ jobs:
 
       - name: Build Docker image (native)
         run: |
-          docker build -t fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }} .
+          docker buildx build \
+            --platform linux/${{ matrix.arch }} \
+            --provenance=false \
+            --push \
+            -t fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }} \
+            .
 
-      - name: Push image
-        run: |
-          docker push fr6nco/coredns:${{ env.COREDNS_VERSION }}-edgecdnx-${{ env.VERSION_SUFFIX }}-${{ matrix.arch }}
 
   docker-manifest:
     needs: docker-image
