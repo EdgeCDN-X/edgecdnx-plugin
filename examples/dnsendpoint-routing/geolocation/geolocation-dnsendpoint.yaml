@@ -4,6 +4,8 @@ metadata:
   name: geolocation-demo
   namespace: edgecdnx
 spec:
+  project:
+    name: edgecdnx
   dnsName: app.example.com
   routingPolicy: Geolocation
   recordTTL: 60
@@ -21,6 +23,8 @@ metadata:
     project: tbotech
     edgecdnx.com/region: us-east
 spec:
+  project:
+    name: edgecdnx
   weight: 100
   geoLookup:
     weight: 100
@@ -52,6 +56,8 @@ metadata:
     project: tbotech
     edgecdnx.com/region: eu-central
 spec:
+  project:
+    name: edgecdnx
   weight: 100
   geoLookup:
     weight: 100
@@ -73,6 +79,6 @@ spec:
       flavor: ""
       nodes:
         - name: eu-central-node-1
-          ipv4: 74.220.31.183
+          ipv4: 81.2.241.7
       labels:
         region: eu-central

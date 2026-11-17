@@ -3,6 +3,8 @@ kind: HealthCheckProfile
 metadata:
   name: healthcheckprofile
 spec:
+  project:
+    name: edgecdnx
   probes:
     - type: ASSUME
       timeout: 1s

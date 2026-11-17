@@ -79,14 +79,60 @@ func (l *LocationManager) GetLocationByName(name string, scopes ...routingScope)
 	l.Sync.RLock()
 	defer l.Sync.RUnlock()
 
-	if len(scopes) != 0 && !strings.Contains(name, "/") {
-		name = resourceKey(scopes[0].namespace, name)
+	if len(scopes) == 0 {
+		location, exists := l.Locations[name]
+		if !exists {
+			return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
+		}
+		return location, nil
 	}
-	location, exists := l.Locations[name]
-	if !exists || !matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) {
+
+	scope := scopes[0]
+	if strings.Contains(name, "/") {
+		location, exists := l.Locations[name]
+		if !exists || !locationAvailableToScope(location.Namespace, projectName(location.Spec.Project), location.Spec.Sharing, scopes) {
+			return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
+		}
+		return location, nil
+	}
+
+	localKey := resourceKey(scope.namespace, name)
+	if location, exists := l.Locations[localKey]; exists {
+		if locationAvailableToScope(location.Namespace, projectName(location.Spec.Project), location.Spec.Sharing, scopes) {
+			return location, nil
+		}
 		return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
 	}
 
+	var match *infrastructurev1alpha1.Location
+	for _, location := range l.Locations {
+		if location.Name != name ||
+			!locationAvailableToScope(location.Namespace, projectName(location.Spec.Project), location.Spec.Sharing, scopes) {
+			continue
+		}
+		if match != nil {
+			return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s is ambiguous across namespaces", name)
+		}
+		candidate := location
+		match = &candidate
+	}
+	if match == nil {
+		return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found", name)
+	}
+	return *match, nil
+}
+
+func (l *LocationManager) getLocationInScope(name string, scope routingScope) (infrastructurev1alpha1.Location, error) {
+	l.Sync.RLock()
+	defer l.Sync.RUnlock()
+
+	if !strings.Contains(name, "/") {
+		name = resourceKey(scope.namespace, name)
+	}
+	location, exists := l.Locations[name]
+	if !exists || scopeFor(location.Namespace, location.Spec.Project) != scope {
+		return infrastructurev1alpha1.Location{}, fmt.Errorf("Location %s not found in scope %s/%s", name, scope.namespace, scope.project)
+	}
 	return location, nil
 }
 
@@ -288,7 +334,8 @@ func (l *LocationManager) findMatchingTargetsWithWeightsLocked(routeSelector *me
 	selector := compileRouteSelector(routeSelector)
 
 	for locationName, location := range l.Locations {
-		if matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) && selector.Matches(labels.Set(location.Labels)) {
+		if locationAvailableToScope(location.Namespace, projectName(location.Spec.Project), location.Spec.Sharing, scopes) &&
+			selector.Matches(labels.Set(location.Labels)) {
 			locations = append(locations, weightedTarget{Name: locationName, Weight: location.Spec.Weight})
 		}
 	}

@@ -409,6 +409,17 @@ func dnsEndpointFromObject(obj any) (*infrastructurev1alpha1.DNSEndpoint, error)
 	if _, ok := dns.StringToType[strings.ToUpper(dnsEndpoint.Spec.RecordType)]; !ok {
 		return nil, fmt.Errorf("unsupported DNSEndpoint record type %q", dnsEndpoint.Spec.RecordType)
 	}
+	if zone := dnsEndpoint.Spec.Zone; zone != nil {
+		if zone.Kind != "" && zone.Kind != "Zone" {
+			return nil, fmt.Errorf("unsupported DNSEndpoint Zone reference kind %q", zone.Kind)
+		}
+		if zone.APIVersion != "" && zone.APIVersion != infrastructurev1alpha1.SchemeGroupVersion.String() {
+			return nil, fmt.Errorf("unsupported DNSEndpoint Zone reference apiVersion %q", zone.APIVersion)
+		}
+		if zone.Namespace == "" {
+			zone.Namespace = dnsEndpoint.Namespace
+		}
+	}
 
 	return dnsEndpoint, nil
 }

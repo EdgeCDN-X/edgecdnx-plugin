@@ -71,6 +71,106 @@ func TestEndpointLocationCandidatesStayWithinTenant(t *testing.T) {
 	}
 }
 
+func TestEndpointLocationCandidatesHonorSharingAndRevocation(t *testing.T) {
+	manager := newTestLocationManager(t)
+	location := newTestLocation("edge", map[string]string{"role": "edge"}, "", "node")
+	location.Namespace = "tenant-b"
+	location.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+	location.Spec.Sharing = &infrastructurev1alpha1.ResourceSharing{
+		Projects: []infrastructurev1alpha1.ProjectReference{{Namespace: "tenant-a", Name: "frontend"}},
+	}
+	manager.locationEventHandlers().AddFunc(testLocationObject(t, location))
+	endpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+		Spec:       infrastructurev1alpha1.DNSEndpointSpec{Project: &corev1.LocalObjectReference{Name: "frontend"}, DNSName: "example.com", RecordType: "A"},
+	}
+	entry, err := newTestDNSEndpointManager(endpoint).getDNSEndpoint("example.com", dns.TypeA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAvailable := func(want bool) {
+		t.Helper()
+		if got := len(entry.matchingLocationTargets(&manager)) == 1; got != want {
+			t.Fatalf("weighted/round-robin availability = %t, want %t", got, want)
+		}
+		if got := len(entry.matchingGeoCandidates(&manager).candidates) == 1; got != want {
+			t.Fatalf("geolocation availability = %t, want %t", got, want)
+		}
+		_, err := manager.GetLocationByName("edge", scopeFor(endpoint.Namespace, endpoint.Spec.Project))
+		if (err == nil) != want {
+			t.Fatalf("name lookup error = %v, want available %t", err, want)
+		}
+	}
+	assertAvailable(true)
+
+	location.Spec.Sharing = nil
+	manager.locationEventHandlers().UpdateFunc(testLocationObject(t, *location.DeepCopy()), testLocationObject(t, location))
+	assertAvailable(false)
+}
+
+func TestEndpointLocationSharingAllProjectsAndSameNameIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		sharing     *infrastructurev1alpha1.ResourceSharing
+		namespace   string
+		project     string
+		wantAllowed bool
+	}{
+		{
+			name:        "all projects",
+			sharing:     &infrastructurev1alpha1.ResourceSharing{AllProjects: true},
+			namespace:   "tenant-b",
+			project:     "platform",
+			wantAllowed: true,
+		},
+		{
+			name:        "project reference defaults to target namespace",
+			sharing:     &infrastructurev1alpha1.ResourceSharing{Projects: []infrastructurev1alpha1.ProjectReference{{Name: "frontend"}}},
+			namespace:   "tenant-a",
+			project:     "platform",
+			wantAllowed: true,
+		},
+		{
+			name:        "same project name in another namespace is not the source project",
+			sharing:     &infrastructurev1alpha1.ResourceSharing{Projects: []infrastructurev1alpha1.ProjectReference{{Name: "frontend"}}},
+			namespace:   "tenant-b",
+			project:     "platform",
+			wantAllowed: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newTestLocationManager(t)
+			location := newTestLocation("edge", nil, "", "node")
+			location.Namespace = tc.namespace
+			location.Spec.Project = &corev1.LocalObjectReference{Name: tc.project}
+			location.Spec.Sharing = tc.sharing
+			manager.locationEventHandlers().AddFunc(testLocationObject(t, location))
+			scope := routingScope{namespace: "tenant-a", project: "frontend"}
+			_, err := manager.GetLocationByName("edge", scope)
+			if (err == nil) != tc.wantAllowed {
+				t.Fatalf("shared lookup error = %v, want available %t", err, tc.wantAllowed)
+			}
+		})
+	}
+}
+
+func TestSharedLocationNameCollisionDoesNotBypassLocalScope(t *testing.T) {
+	manager := newTestLocationManager(t)
+	local := newTestLocation("edge", nil, "", "local")
+	local.Namespace = "tenant-a"
+	local.Spec.Project = &corev1.LocalObjectReference{Name: "other"}
+	remote := newTestLocation("edge", nil, "", "remote")
+	remote.Namespace = "tenant-b"
+	remote.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+	remote.Spec.Sharing = &infrastructurev1alpha1.ResourceSharing{AllProjects: true}
+	manager.locationEventHandlers().AddFunc(testLocationObject(t, local))
+	manager.locationEventHandlers().AddFunc(testLocationObject(t, remote))
+
+	if _, err := manager.GetLocationByName("edge", routingScope{namespace: "tenant-a", project: "frontend"}); err == nil {
+		t.Fatal("a foreign local Location name must not resolve to a shared cross-namespace collision")
+	}
+}
+
 func testLocationObject(t *testing.T, location infrastructurev1alpha1.Location) *unstructured.Unstructured {
 	t.Helper()
 	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&location)

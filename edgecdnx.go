@@ -173,7 +173,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 			if location.Spec.Parent != "" {
 				// If a parent location is specified, attempt to route to the parent location
-				parentLocation, err := e.LocationManager.GetLocationByName(location.Spec.Parent, scope)
+				parentLocation, err := e.LocationManager.getLocationInScope(location.Spec.Parent, scopeFor(location.Namespace, location.Spec.Project))
 				log.Debug(fmt.Sprintf("edgecdnx: Falling back to parent location %s", location.Spec.Parent))
 				if err != nil {
 					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", location.Spec.Parent))
@@ -196,7 +196,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			}
 
 			for _, fbLoc := range location.Spec.FallbackLocations {
-				fallBackLocation, err := e.LocationManager.GetLocationByName(fbLoc, scope)
+				fallBackLocation, err := e.LocationManager.getLocationInScope(fbLoc, scopeFor(location.Namespace, location.Spec.Project))
 				log.Debug(fmt.Sprintf("edgecdnx: Falling back to location %s", fbLoc))
 				if err != nil {
 					log.Error(fmt.Sprintf("edgecdnx: Fallback location %s not found", fbLoc))

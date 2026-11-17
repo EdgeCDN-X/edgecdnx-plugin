@@ -103,6 +103,13 @@ func setup(c *caddy.Controller) error {
 	if namespace == metav1.NamespaceAll {
 		log.Infof("edgecdnx: Watching resources in all namespaces")
 	}
+	locationFac := fac
+	var sharedLocationFac dynamicinformer.DynamicSharedInformerFactory
+	if namespace != metav1.NamespaceAll {
+		sharedLocationFac = dynamicinformer.NewFilteredDynamicSharedInformerFactory(clientSet, 10*time.Minute, metav1.NamespaceAll, nil)
+		locationFac = sharedLocationFac
+		log.Infof("edgecdnx: Watching Locations in all namespaces to support shared locations")
+	}
 
 	zoneManager := NewZoneManager(fac, ZoneManagerConfiguration{
 		Namespace: namespace,
@@ -119,18 +126,24 @@ func setup(c *caddy.Controller) error {
 		Namespace: namespace,
 	})
 
-	locationManager := NewLocationManager(fac, LocationManagerConfiguration{
+	locationManager := NewLocationManager(locationFac, LocationManagerConfiguration{
 		Namespace: namespace,
 		RecordTTL: recordttl,
 	})
 
 	factoryCloseChan := make(chan struct{})
 	fac.Start(factoryCloseChan)
+	if sharedLocationFac != nil {
+		sharedLocationFac.Start(factoryCloseChan)
+	}
 
 	c.OnShutdown(func() error {
 		log.Infof("edgecdnx: shutting down informer")
 		close(factoryCloseChan)
 		fac.Shutdown()
+		if sharedLocationFac != nil {
+			sharedLocationFac.Shutdown()
+		}
 		return nil
 	})
 

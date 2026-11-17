@@ -1,6 +1,8 @@
 coredns.tar.gz
 coredns-*
 config
+go.work
+go.work.sum
 
 .DS_Store
 

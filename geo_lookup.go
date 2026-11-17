@@ -70,7 +70,7 @@ func (l *LocationManager) findGeoCandidatesLocked(routeSelector *metav1.LabelSel
 	selector := compileRouteSelector(routeSelector)
 	attributeIndices := make(map[string]int)
 	for locationName, location := range l.Locations {
-		if !matchesRoutingScope(location.Namespace, location.Spec.Project, scopes) {
+		if !locationAvailableToScope(location.Namespace, projectName(location.Spec.Project), location.Spec.Sharing, scopes) {
 			continue
 		}
 		matches := false

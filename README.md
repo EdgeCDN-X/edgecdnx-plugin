@@ -22,17 +22,27 @@ It supports:
 
 The Corefile `namespace` directive is optional. When omitted, the shared informer
 factory watches Locations, PrefixLists, Zones, and DNSEndpoints in all namespaces.
-An explicit `namespace edgecdnx` restricts all four informers to that namespace.
-All-namespace mode requires cluster-wide `get`, `list`, and `watch` permissions
-for those CRDs, rather than a RoleBinding limited to one namespace.
+An explicit `namespace edgecdnx` restricts PrefixLists, Zones, and DNSEndpoints
+to that namespace. Locations are watched in all namespaces so explicitly shared
+Locations remain discoverable. All-namespace mode requires cluster-wide `get`,
+`list`, and `watch` permissions for those CRDs. With an explicit namespace, the
+plugin still requires cluster-wide `get`, `list`, and `watch` permissions for
+Locations; the other three CRDs can remain namespace-scoped.
 
 Locations are stored by namespace/name. The selected DNSEndpoint's namespace and
 `spec.project.name` constrain weighted, round-robin, geolocation, prefix routing,
-and failover selection. Parent, child, and fallback Location references resolve
-within that same namespace and Project. Prefix tables also include namespace and
-Project in their identity, so identical labels and CIDRs in different tenants do
-not collide. Label selectors still choose locations and node groups within the
-tenant; labels do not establish tenant ownership.
+and failover selection. A Location in another namespace or Project is eligible
+only when its `spec.sharing` grants the DNSEndpoint's source project access.
+`allProjects` grants access to all projects; entries in `projects` identify
+individual projects, with an omitted namespace meaning the Location's namespace.
+Sharing grants routing use only, not ownership or management permissions.
+Parent, child, and fallback Location references remain scoped to the owning
+Location's namespace and Project. Prefix-list discovery remains scoped to the
+DNSEndpoint's source namespace and Project, while a discovered destination may be
+an authorized shared Location. Prefix tables include namespace and Project in
+their identity, so identical labels and CIDRs in different tenants do not
+collide. Label selectors still narrow authorized results; labels do not grant
+access.
 
 Populate `spec.project.name` consistently on tenant resources. Legacy resources
 without a Project reference can match only other unowned resources in the same
@@ -406,7 +416,7 @@ Directives:
 
 | Directive | Required | Default | Description |
 | --- | --- | --- | --- |
-| `namespace` | No | all namespaces | Restrict all EdgeCDN-X resource informers to one Kubernetes namespace when specified. |
+| `namespace` | No | all namespaces | Restrict PrefixList, Zone, and DNSEndpoint informers; Location discovery remains cluster-wide for sharing. |
 | `soa` | Yes | none | SOA MNAME used when crafting SOA records. A name without a trailing dot is relative to each zone; a trailing-dot name is absolute. |
 | `ns` | Recommended (repeatable) | empty | Adds an NS record for each served zone. Format: `ns <hostname>`. No glue A records are generated. |
 | `recordttl` | No | `60` | Fallback TTL for generated node answers when a DNSEndpoint does not specify one. |
@@ -455,6 +465,20 @@ This repository builds a patched CoreDNS that includes `edgecdnx` in the directi
 ```bash
 make build
 ```
+
+If you use a local `go.work` (for example, to include the adjacent controller
+checkout), add the extracted CoreDNS module to it before building:
+
+```bash
+make patch
+go work use ./coredns-1.14.2
+make build
+```
+
+Otherwise Go reports that the plugin module does not contain the
+`coredns-1.14.2` package. Use the directory matching `COREDNS_VERSION` if
+overriding the version. Keep workspace mode enabled when testing unreleased
+controller changes; `GOWORK=off` instead uses the published controller dependency.
 
 What this does:
 - Downloads CoreDNS source tarball for configured version

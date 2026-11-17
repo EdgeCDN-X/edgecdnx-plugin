@@ -174,6 +174,158 @@ func TestServeDNSDuplicateLocationNamesStayWithinTenant(t *testing.T) {
 	}
 }
 
+func TestServeDNSUsesAuthorizedSharedLocationsForRoutingModes(t *testing.T) {
+	for _, policy := range []string{"RoundRobin", "Weighted", "Geolocation", "Failover"} {
+		t.Run(policy, func(t *testing.T) {
+			endpoint := infrastructurev1alpha1.DNSEndpoint{
+				ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+				Spec: infrastructurev1alpha1.DNSEndpointSpec{
+					Project:       &corev1.LocalObjectReference{Name: "frontend"},
+					DNSName:       "example.com",
+					RecordType:    "A",
+					RoutingPolicy: policy,
+					Targets:       []string{"edge"},
+				},
+			}
+			location := newTestLocation("edge", map[string]string{"role": "edge"}, "", "shared-node")
+			location.Namespace = "tenant-b"
+			location.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+			location.Spec.Sharing = &infrastructurev1alpha1.ResourceSharing{
+				Projects: []infrastructurev1alpha1.ProjectReference{{Namespace: "tenant-a", Name: "frontend"}},
+			}
+			location.Spec.GeoLookup.Attributes = map[string]infrastructurev1alpha1.GeoLookupAttributeSpec{"default": {Weight: 1}}
+			location.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.77"
+			locations := newTestLocationManager(t)
+			locations.locationEventHandlers().AddFunc(testLocationObject(t, location))
+			locations.Config.RecordTTL = 60
+			prefixes := newTestPrefixListRoutingManager()
+			plugin := EdgeCDNX{
+				DNSEndpointManager:       newTestDNSEndpointManager(endpoint),
+				LocationManager:          &locations,
+				PrefixListRoutingManager: &prefixes,
+			}
+
+			request := new(dns.Msg)
+			request.SetQuestion("example.com.", dns.TypeA)
+			writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+				remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+			}}
+			rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+			if err != nil || rcode != dns.RcodeSuccess || writer.msg == nil || len(writer.msg.Answer) != 1 {
+				t.Fatalf("ServeDNS failed: rcode=%d err=%v answer=%v", rcode, err, writer.msg)
+			}
+			if answer, ok := writer.msg.Answer[0].(*dns.A); !ok || answer.A.String() != "192.0.2.77" {
+				t.Fatalf("shared Location was not selected: %v", writer.msg.Answer)
+			}
+		})
+	}
+}
+
+func TestServeDNSGeolocationUsesOnlySourceProjectPrefixesAndSharedDestination(t *testing.T) {
+	endpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			Project:       &corev1.LocalObjectReference{Name: "frontend"},
+			DNSName:       "example.com",
+			RecordType:    "A",
+			RoutingPolicy: "Geolocation",
+		},
+	}
+	location := newTestLocation("edge", nil, "", "shared-node")
+	location.Namespace = "tenant-b"
+	location.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+	location.Spec.Sharing = &infrastructurev1alpha1.ResourceSharing{AllProjects: true}
+	location.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.88"
+	locations := newTestLocationManager(t)
+	locations.locationEventHandlers().AddFunc(testLocationObject(t, location))
+
+	prefixes := newTestPrefixListRoutingManager()
+	sourceScope := routingScope{namespace: "tenant-a", project: "frontend"}
+	table := prefixes.routingTableFor(nil, sourceScope)
+	_, prefix, err := net.ParseCIDR("198.51.100.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.RoutingV4.Add(PrefixTreeEntry{Location: "edge", Prefix: *prefix})
+	foreignTable := prefixes.routingTableFor(nil, routingScope{namespace: "tenant-b", project: "platform"})
+	foreignTable.RoutingV4.Add(PrefixTreeEntry{Location: "private-edge", Prefix: *prefix})
+
+	plugin := EdgeCDNX{
+		DNSEndpointManager:       newTestDNSEndpointManager(endpoint),
+		LocationManager:          &locations,
+		PrefixListRoutingManager: &prefixes,
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+	}}
+	rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+	if err != nil || rcode != dns.RcodeSuccess || writer.msg == nil || len(writer.msg.Answer) != 1 {
+		t.Fatalf("ServeDNS failed: rcode=%d err=%v answer=%v", rcode, err, writer.msg)
+	}
+	if answer, ok := writer.msg.Answer[0].(*dns.A); !ok || answer.A.String() != "192.0.2.88" {
+		t.Fatalf("source prefix did not route to authorized shared Location: %v", writer.msg.Answer)
+	}
+}
+
+func TestSharedLocationResolvesItsPrivateInfrastructureFallbacks(t *testing.T) {
+	for _, mode := range []string{"parent", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			endpoint := infrastructurev1alpha1.DNSEndpoint{
+				ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+				Spec: infrastructurev1alpha1.DNSEndpointSpec{
+					Project:       &corev1.LocalObjectReference{Name: "frontend"},
+					DNSName:       "example.com",
+					RecordType:    "A",
+					RoutingPolicy: "Failover",
+					Targets:       []string{"edge"},
+				},
+			}
+			shared := newTestLocation("edge", nil, "", "")
+			shared.Namespace = "tenant-b"
+			shared.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+			shared.Spec.Sharing = &infrastructurev1alpha1.ResourceSharing{
+				Projects: []infrastructurev1alpha1.ProjectReference{{Namespace: "tenant-a", Name: "frontend"}},
+			}
+			dependencyName := "platform-fallback"
+			if mode == "parent" {
+				shared.Spec.Parent = "platform-parent"
+				dependencyName = "platform-parent"
+			} else {
+				shared.Spec.FallbackLocations = []string{dependencyName}
+			}
+			dependency := newTestLocation(dependencyName, nil, "", "dependency-node")
+			dependency.Namespace = "tenant-b"
+			dependency.Spec.Project = &corev1.LocalObjectReference{Name: "platform"}
+			dependency.Spec.NodeGroups[0].Nodes[0].Ipv4 = "192.0.2.99"
+			locations := newTestLocationManager(t)
+			handlers := locations.locationEventHandlers()
+			handlers.AddFunc(testLocationObject(t, shared))
+			handlers.AddFunc(testLocationObject(t, dependency))
+			prefixes := newTestPrefixListRoutingManager()
+
+			plugin := EdgeCDNX{
+				DNSEndpointManager:       newTestDNSEndpointManager(endpoint),
+				LocationManager:          &locations,
+				PrefixListRoutingManager: &prefixes,
+			}
+			request := new(dns.Msg)
+			request.SetQuestion("example.com.", dns.TypeA)
+			writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+				remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+			}}
+			rcode, err := plugin.ServeDNS(context.Background(), writer, request)
+			if err != nil || rcode != dns.RcodeSuccess || writer.msg == nil || len(writer.msg.Answer) != 1 {
+				t.Fatalf("ServeDNS failed: rcode=%d err=%v answer=%v", rcode, err, writer.msg)
+			}
+			if answer, ok := writer.msg.Answer[0].(*dns.A); !ok || answer.A.String() != "192.0.2.99" {
+				t.Fatalf("private infrastructure fallback was not used: %v", writer.msg.Answer)
+			}
+		})
+	}
+}
+
 func TestServeDNSGeolocationEndpointUsesPrefixRoutingAndSelector(t *testing.T) {
 	routeSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "acme"}}
 	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{

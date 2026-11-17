@@ -11,6 +11,7 @@ import (
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
 	"github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/miekg/dns"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -168,6 +169,60 @@ func TestDNSEndpointTypedKeysSeparateRecordTypes(t *testing.T) {
 		if _, err := manager.getDNSEndpoint("example.com.", qtype); err == nil {
 			t.Fatalf("unknown query type %d matched endpoint", qtype)
 		}
+	}
+}
+
+func TestDNSEndpointZoneObjectReferenceDefaultsNamespaceAndValidatesGVK(t *testing.T) {
+	endpoint := infrastructurev1alpha1.DNSEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "tenant-a"},
+		Spec: infrastructurev1alpha1.DNSEndpointSpec{
+			DNSName: "example.com", RecordType: "A",
+			Zone: &corev1.ObjectReference{Name: "example-zone"},
+		},
+	}
+	decoded, err := dnsEndpointFromObject(testDNSEndpointObject(t, endpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Spec.Zone.Namespace != endpoint.Namespace {
+		t.Fatalf("Zone namespace = %q, want endpoint namespace %q", decoded.Spec.Zone.Namespace, endpoint.Namespace)
+	}
+	valid := endpoint.DeepCopy()
+	valid.Spec.Zone = &corev1.ObjectReference{
+		APIVersion: infrastructurev1alpha1.SchemeGroupVersion.String(),
+		Kind:       "Zone",
+		Name:       "example-zone",
+		Namespace:  "tenant-b",
+	}
+	decoded, err = dnsEndpointFromObject(testDNSEndpointObject(t, *valid))
+	if err != nil {
+		t.Fatalf("valid Zone reference GVK was rejected: %v", err)
+	}
+	if decoded.Spec.Zone.Namespace != "tenant-b" {
+		t.Fatalf("explicit Zone namespace = %q, want tenant-b", decoded.Spec.Zone.Namespace)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		apiVersion string
+	}{
+		{name: "wrong kind", kind: "Location"},
+		{name: "wrong apiVersion", apiVersion: "other.example.com/v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := endpoint.DeepCopy()
+			invalid.Spec.Zone.Kind = tc.kind
+			invalid.Spec.Zone.APIVersion = tc.apiVersion
+			if _, err := dnsEndpointFromObject(testDNSEndpointObject(t, *invalid)); err == nil {
+				t.Fatal("invalid Zone reference GVK was accepted")
+			}
+		})
+	}
+
+	endpoint.Spec.Zone = nil
+	if _, err := dnsEndpointFromObject(testDNSEndpointObject(t, endpoint)); err != nil {
+		t.Fatalf("legacy endpoint without Zone reference was rejected: %v", err)
 	}
 }
 
