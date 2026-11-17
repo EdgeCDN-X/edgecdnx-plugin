@@ -15,6 +15,7 @@ It supports:
 - Hash-based node selection with health-aware filtering, spanning child locations
 - Parent location fallback, followed by configured fallback locations, when a primary location has no healthy node
 - Authoritative zone responses for configured Zone CRDs (SOA/NS and related behavior)
+- NS referrals for delegated subdomains of configured zones
 
 ## DNSEndpoint Types
 
@@ -108,6 +109,52 @@ Node-group targeting within the selected location remains supported, and node
 selection still evaluates the selector and current health data.
 
 The plugin implements the `DNSEndpoint` CRD routing modes and record types defined by the API schema:
+
+### Subdomain delegation
+
+A `Simple` NS DNSEndpoint below a served Zone delegates that name and its
+descendants. The plugin returns a non-authoritative referral with the NS records
+in the authority section, rather than answering parent-zone records below the
+cut. NS records at the Zone apex and wildcard NS endpoints are not cuts. When
+the child Zone is also served locally, queries to it use the child Zone; DS
+queries at its apex use the parent when the parent has a delegation.
+
+For example, create a DNSEndpoint referencing the `tbotech.sk` Zone:
+
+```yaml
+apiVersion: infrastructure.edgecdnx.com/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: demo-ns
+  namespace: tbotech
+spec:
+  project:
+    name: tbotech
+  zone:
+    name: tbotech.sk
+  dnsName: demo.tbotech.sk
+  recordType: NS
+  routingPolicy: Simple
+  recordTTL: 300
+  targets:
+    - ns1.randomnsserver.com.
+```
+
+Configure the target nameserver to serve the child zone. For nameservers inside
+the parent zone, configure their A and/or AAAA addresses as `Simple` DNSEndpoints;
+the plugin includes these as glue in referrals. In particular, nameservers inside
+the delegated child need glue to avoid a circular resolution dependency. This
+plugin does not provide signed delegations: DS queries at a cut return an
+unsigned parent-side NODATA response.
+
+Zone metadata, SOA records, and conflicts are published in an immutable atomic
+snapshot. A request loads the zone snapshot once and checks ancestor names with
+map lookups, reusing the result for conflict detection, delegation, and local
+zone answers without reader locks or scans over configured zones. NS and glue
+records are compiled when endpoint snapshots are published, not during queries.
+Endpoint updates rebuild compiled delegations, including glue dependencies.
+Delegation lookup skips immediately when no NS endpoints or conflicts exist;
+otherwise it walks label boundaries without allocating ancestor lists.
 
 ### Routing policies
 

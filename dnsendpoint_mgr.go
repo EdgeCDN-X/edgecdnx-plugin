@@ -39,8 +39,9 @@ type DNSEndpointManager struct {
 
 // Published snapshots and their endpoint configuration must never be mutated.
 type dnsEndpointSnapshot struct {
-	endpoints map[endpointKey]*dnsEndpointEntry
-	conflicts map[endpointKey]bool
+	endpoints   map[endpointKey]*dnsEndpointEntry
+	conflicts   map[endpointKey]bool
+	delegations map[string]*delegationAnswer
 }
 
 type endpointKey struct {
@@ -277,7 +278,9 @@ func (dm *DNSEndpointManager) publishEndpoint(oldKey endpointKey, endpoint *infr
 		}
 		endpoints[key] = entry
 	}
-	dm.endpoints.Store(&dnsEndpointSnapshot{endpoints: endpoints, conflicts: conflicts})
+	snapshot := &dnsEndpointSnapshot{endpoints: endpoints, conflicts: conflicts}
+	snapshot.buildDelegations()
+	dm.endpoints.Store(snapshot)
 }
 
 func (dm *DNSEndpointManager) updateEndpointSources(oldEndpoint, newEndpoint *infrastructurev1alpha1.DNSEndpoint) {

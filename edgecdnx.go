@@ -91,8 +91,17 @@ func (e EdgeCDNX) BuildSimpleResponse(dnsEndpoint infrastructurev1alpha1.DNSEndp
 func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 	qname := state.Name()
-	if e.ZoneManager != nil && e.ZoneManager.hasConflict(qname) {
+	var zones *zoneSnapshot
+	var zone *zoneEntry
+	zones = e.ZoneManager.snapshot.Load()
+	var conflict bool
+	zone, conflict = zones.lookup(qname)
+	if conflict {
 		return dns.RcodeServerFailure, fmt.Errorf("%w for zone containing %s", errConflictingDNS, qname)
+	}
+	handled, rcode, err := e.serveDelegation(state, zones, zone)
+	if handled {
+		return rcode, err
 	}
 
 	// Fetch DNS Endpoint first
@@ -222,12 +231,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	// Local Zone Handling
-	e.ZoneManager.Sync.RLock()
-	defer e.ZoneManager.Sync.RUnlock()
-
-	zone := plugin.Zones(e.ZoneManager.Zones).Matches(qname)
-
-	if zone == "" {
+	if zone == nil {
 		return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 	} else {
 		m := new(dns.Msg)
@@ -236,7 +240,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 		nxdomain := true
 		var soa dns.RR
-		for _, r := range e.ZoneManager.Records[zone] {
+		for _, r := range zone.records {
 			// Handle SOA records
 			if r.Header().Rrtype == dns.TypeSOA && soa == nil {
 				soa = r

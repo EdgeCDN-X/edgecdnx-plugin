@@ -2,9 +2,9 @@ package edgecdnxplugin
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
@@ -23,10 +23,45 @@ type ZoneManager struct {
 	Informer            cache.SharedIndexInformer
 	HandlerRegistration cache.ResourceEventHandlerRegistration
 	Sync                *sync.RWMutex
-	Zones               []string
-	Records             map[string][]dns.RR
+	snapshot            atomic.Pointer[zoneSnapshot]
 	sources             map[string]*infrastructurev1alpha1.Zone
-	conflicts           map[string]bool
+}
+
+type zoneSnapshot struct {
+	zones map[string]*zoneEntry
+}
+
+type zoneEntry struct {
+	name     string
+	records  []dns.RR
+	soa      dns.RR
+	conflict bool
+}
+
+// lookup takes a normalized FQDN and checks every ancestor for conflicts.
+func (s *zoneSnapshot) lookup(name string) (zone *zoneEntry, conflict bool) {
+	if s == nil {
+		return nil, false
+	}
+	for {
+		if entry := s.zones[name]; entry != nil {
+			if entry.conflict {
+				conflict = true
+			} else if zone == nil {
+				zone = entry
+			}
+		}
+		if name == "." {
+			break
+		}
+		offset, end := dns.NextLabel(name, 0)
+		if end {
+			name = "."
+		} else {
+			name = name[offset:]
+		}
+	}
+	return zone, conflict
 }
 
 type ZoneManagerConfiguration struct {
@@ -70,10 +105,8 @@ func buildZoneRecords(zone infrastructurev1alpha1.Zone, soaRec string, ns []NSRe
 // NewZoneManager creates a new ZoneManager that watches Zone CRDs in the specified namespace
 func NewZoneManager(factory dynamicinformer.DynamicSharedInformerFactory, config ZoneManagerConfiguration) *ZoneManager {
 	zm := &ZoneManager{
-		fac:     factory,
-		Sync:    &sync.RWMutex{},
-		Zones:   []string{},
-		Records: make(map[string][]dns.RR),
+		fac:  factory,
+		Sync: &sync.RWMutex{},
 	}
 
 	zoneInformer := factory.ForResource(schema.GroupVersionResource{
@@ -139,12 +172,10 @@ func (zm *ZoneManager) rebuildZonesLocked(config ZoneManagerConfiguration) {
 			byDomain[domain] = append(byDomain[domain], zone)
 		}
 	}
-	zm.Zones = nil
-	zm.Records = make(map[string][]dns.RR)
-	zm.conflicts = make(map[string]bool)
+	snapshot := &zoneSnapshot{zones: make(map[string]*zoneEntry, len(byDomain))}
 	for domain, zones := range byDomain {
 		if len(zones) > 1 {
-			zm.conflicts[domain] = true
+			snapshot.zones[domain] = &zoneEntry{name: domain, conflict: true}
 			log.Errorf("edgecdnx: multiple Zones claim %s; refusing ambiguous answers", domain)
 			continue
 		}
@@ -152,19 +183,19 @@ func (zm *ZoneManager) rebuildZonesLocked(config ZoneManagerConfiguration) {
 		if err != nil {
 			continue
 		}
-		zm.Zones = append(zm.Zones, domain)
-		zm.Records[domain] = records
+		entry := &zoneEntry{name: domain, records: records}
+		for _, rr := range records {
+			if rr.Header().Rrtype == dns.TypeSOA {
+				entry.soa = rr
+				break
+			}
+		}
+		snapshot.zones[domain] = entry
 	}
-	sort.Strings(zm.Zones)
+	zm.snapshot.Store(snapshot)
 }
 
 func (zm *ZoneManager) hasConflict(qname string) bool {
-	zm.Sync.RLock()
-	defer zm.Sync.RUnlock()
-	for domain := range zm.conflicts {
-		if dns.IsSubDomain(domain, dns.Fqdn(strings.ToLower(qname))) {
-			return true
-		}
-	}
-	return false
+	_, conflict := zm.snapshot.Load().lookup(dns.Fqdn(strings.ToLower(qname)))
+	return conflict
 }
