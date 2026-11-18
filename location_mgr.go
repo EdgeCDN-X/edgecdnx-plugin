@@ -46,9 +46,10 @@ type HashFilters struct {
 }
 
 type FilteredNodeWithMeta struct {
-	Node         infrastructurev1alpha1.NodeSpec
-	LocationName string
-	NodeStatus   infrastructurev1alpha1.NodeInstanceStatus
+	Node          infrastructurev1alpha1.NodeSpec
+	LocationName  string
+	NodeGroupName string
+	NodeStatus    infrastructurev1alpha1.NodeInstanceStatus
 }
 
 func resourceKey(namespace, name string) string {
@@ -181,9 +182,10 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 			}
 
 			filteredNodes = append(filteredNodes, FilteredNodeWithMeta{
-				Node:         node,
-				LocationName: location.Name,
-				NodeStatus:   nodeStatus,
+				Node:          node,
+				LocationName:  location.Name,
+				NodeStatus:    nodeStatus,
+				NodeGroupName: ng.Name,
 			})
 		}
 	}
@@ -252,9 +254,10 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 						}
 
 						filteredNodes = append(filteredNodes, FilteredNodeWithMeta{
-							Node:         node,
-							LocationName: childLocation.Name,
-							NodeStatus:   nodeStatus,
+							Node:          node,
+							LocationName:  childLocation.Name,
+							NodeStatus:    nodeStatus,
+							NodeGroupName: ng.Name,
 						})
 					}
 				}

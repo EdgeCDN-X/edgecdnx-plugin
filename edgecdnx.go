@@ -29,27 +29,44 @@ type EdgeCDNX struct {
 type EdgeCDNXResponseWriter struct {
 }
 
-func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, ttl uint32, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, nodeGroupName string, baseDomain string, ttl uint32, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Authoritative = true
 
-	if state.Req.Question[0].Qtype == dns.TypeA {
-		res := new(dns.A)
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
-		parsed := net.ParseIP(node.Ipv4)
-		res.A = parsed
+	if baseDomain != "" {
+		// Auto expand CNAMES if baseDomain is provided
+		res := new(dns.CNAME)
+		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}
+		res.Target = fmt.Sprintf("%s.%s.%s.%s.", node.Name, nodeGroupName, locationName, baseDomain)
 		m.Answer = append(m.Answer, res)
-	}
+	} else {
+		if node.Cname != "" {
+			// Return a CNAME record pointing to the node's CNAME if specified
+			res := new(dns.CNAME)
+			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}
+			res.Target = node.Cname
+			m.Answer = append(m.Answer, res) // Use the res object instead of record
+		} else {
+			// Return A or AAAA records based on the query type if no CNAME is specified
+			if state.Req.Question[0].Qtype == dns.TypeA {
+				res := new(dns.A)
+				res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
+				parsed := net.ParseIP(node.Ipv4)
+				res.A = parsed
+				m.Answer = append(m.Answer, res)
+			}
 
-	if state.Req.Question[0].Qtype == dns.TypeAAAA {
-		res := new(dns.AAAA)
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
-		parsed := net.ParseIP(node.Ipv6)
-		res.AAAA = parsed
-		m.Answer = append(m.Answer, res)
+			if state.Req.Question[0].Qtype == dns.TypeAAAA {
+				res := new(dns.AAAA)
+				res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
+				parsed := net.ParseIP(node.Ipv6)
+				res.AAAA = parsed
+				m.Answer = append(m.Answer, res)
+			}
+		}
 	}
 
 	state.SizeAndDo(m)
@@ -196,7 +213,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				node, err := e.LocationManager.ApplyHash(&parentLocation, state.Name(), filter)
 				if err == nil {
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-					return e.BuildNodeReponse(node.Node, node.LocationName, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
+					return e.BuildNodeReponse(node.Node, node.LocationName, node.NodeGroupName, location.Spec.BaseDomain, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
 				}
 				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", parentLocation.Name, err))
 
@@ -218,7 +235,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				node, err := e.LocationManager.ApplyHash(&fallBackLocation, state.Name(), filter)
 				if err == nil {
 					log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s successful", node.LocationName))
-					return e.BuildNodeReponse(node.Node, node.LocationName, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
+					return e.BuildNodeReponse(node.Node, node.LocationName, node.NodeGroupName, fallBackLocation.Spec.BaseDomain, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
 				}
 				log.Debug(fmt.Sprintf("edgecdnx: Fallback to location %s failed - %v", fbLoc, err))
 			}
@@ -227,7 +244,7 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			return plugin.NextOrFailure(e.Name(), e.Next, ctx, w, r)
 		}
 
-		return e.BuildNodeReponse(node.Node, node.LocationName, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
+		return e.BuildNodeReponse(node.Node, node.LocationName, node.NodeGroupName, location.Spec.BaseDomain, endpointTTL(*dnsEndpoint.DNSEndpoint, e.LocationManager.Config.RecordTTL), w, r)
 	}
 
 	// Local Zone Handling
