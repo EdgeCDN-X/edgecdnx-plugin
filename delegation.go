@@ -22,6 +22,9 @@ type delegationGlue struct {
 }
 
 func (e EdgeCDNX) serveDelegation(state request.Request, zones *zoneSnapshot, zone *zoneEntry) (bool, int, error) {
+	if e.DNSEndpointManager == nil {
+		return false, 0, nil
+	}
 	snapshot := e.DNSEndpointManager.endpoints.Load()
 	if snapshot == nil || len(snapshot.delegations) == 0 || zone == nil {
 		return false, 0, nil

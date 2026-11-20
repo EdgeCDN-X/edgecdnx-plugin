@@ -21,6 +21,69 @@ func (w *captureResponseWriter) WriteMsg(msg *dns.Msg) error {
 	return nil
 }
 
+func TestBuildNodeResponseTargetPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		node       infrastructurev1alpha1.NodeSpec
+		baseDomain string
+		qtype      uint16
+		wantType   uint16
+		wantValue  string
+	}{
+		{name: "A prefers IPv4", node: infrastructurev1alpha1.NodeSpec{Name: "node", Ipv4: "192.0.2.10", Cname: "node.example.com"}, baseDomain: "edge.example.com", qtype: dns.TypeA, wantType: dns.TypeA, wantValue: "192.0.2.10"},
+		{name: "AAAA prefers IPv6", node: infrastructurev1alpha1.NodeSpec{Name: "node", Ipv6: "2001:db8::10", Cname: "node.example.com"}, baseDomain: "edge.example.com", qtype: dns.TypeAAAA, wantType: dns.TypeAAAA, wantValue: "2001:db8::10"},
+		{name: "A falls back to CNAME", node: infrastructurev1alpha1.NodeSpec{Name: "node", Cname: "node.example.com"}, baseDomain: "edge.example.com", qtype: dns.TypeA, wantType: dns.TypeCNAME, wantValue: "node.example.com."},
+		{name: "AAAA falls back to CNAME", node: infrastructurev1alpha1.NodeSpec{Name: "node", Cname: "node.example.com."}, baseDomain: "edge.example.com", qtype: dns.TypeAAAA, wantType: dns.TypeCNAME, wantValue: "node.example.com."},
+		{name: "A falls back to base domain", node: infrastructurev1alpha1.NodeSpec{Name: "node"}, baseDomain: "edge.example.com.", qtype: dns.TypeA, wantType: dns.TypeCNAME, wantValue: "node.cache.location.edge.example.com."},
+		{name: "AAAA falls back to base domain", node: infrastructurev1alpha1.NodeSpec{Name: "node"}, baseDomain: "edge.example.com.", qtype: dns.TypeAAAA, wantType: dns.TypeCNAME, wantValue: "node.cache.location.edge.example.com."},
+		{name: "invalid IPv4 falls back to CNAME", node: infrastructurev1alpha1.NodeSpec{Name: "node", Ipv4: "invalid", Cname: "node.example.com"}, baseDomain: "edge.example.com", qtype: dns.TypeA, wantType: dns.TypeCNAME, wantValue: "node.example.com."},
+		{name: "no usable A target", node: infrastructurev1alpha1.NodeSpec{Name: "node", Ipv6: "2001:db8::10"}, qtype: dns.TypeA},
+		{name: "no usable AAAA target", node: infrastructurev1alpha1.NodeSpec{Name: "node", Ipv4: "192.0.2.10"}, qtype: dns.TypeAAAA},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := new(dns.Msg)
+			request.SetQuestion("endpoint.example.", tt.qtype)
+			writer := &captureResponseWriter{testResponseWriter: testResponseWriter{
+				remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 5353},
+			}}
+
+			rcode, err := (EdgeCDNX{}).BuildNodeReponse(tt.node, "location", "cache", tt.baseDomain, 60, writer, request)
+			if err != nil || rcode != dns.RcodeSuccess {
+				t.Fatalf("BuildNodeReponse() = (%d, %v), want (%d, nil)", rcode, err, dns.RcodeSuccess)
+			}
+			if tt.wantType == 0 {
+				if len(writer.msg.Answer) != 0 {
+					t.Fatalf("Answer = %v, want none", writer.msg.Answer)
+				}
+				return
+			}
+			if len(writer.msg.Answer) != 1 {
+				t.Fatalf("len(Answer) = %d, want 1", len(writer.msg.Answer))
+			}
+			answer := writer.msg.Answer[0]
+			if answer.Header().Rrtype != tt.wantType {
+				t.Fatalf("Answer type = %d, want %d", answer.Header().Rrtype, tt.wantType)
+			}
+			switch tt.wantType {
+			case dns.TypeA:
+				if got := answer.(*dns.A).A.String(); got != tt.wantValue {
+					t.Fatalf("A = %q, want %q", got, tt.wantValue)
+				}
+			case dns.TypeAAAA:
+				if got := answer.(*dns.AAAA).AAAA.String(); got != tt.wantValue {
+					t.Fatalf("AAAA = %q, want %q", got, tt.wantValue)
+				}
+			case dns.TypeCNAME:
+				if got := answer.(*dns.CNAME).Target; got != tt.wantValue {
+					t.Fatalf("CNAME = %q, want %q", got, tt.wantValue)
+				}
+			}
+		})
+	}
+}
+
 func TestServeDNSSimpleEndpointReturnsTargets(t *testing.T) {
 	dnsEndpoint := infrastructurev1alpha1.DNSEndpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-a"},

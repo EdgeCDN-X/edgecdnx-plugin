@@ -8,6 +8,7 @@ import (
 	"time"
 
 	infrastructurev1alpha1 "github.com/EdgeCDN-X/edgecdnx-controller/api/v1alpha1"
+	"github.com/miekg/dns"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -177,6 +178,31 @@ func TestApplyHashRejectsFailingConditionWithoutStack(t *testing.T) {
 		if _, err := manager.ApplyHash(&location, "example.com.", HashFilters{Qtype: qtype}); err == nil {
 			t.Fatalf("qtype %d: expected failing condition without a stack to mark the node unhealthy", qtype)
 		}
+	}
+}
+
+func TestApplyHashSkipsNodesWithoutUsableQueryTypeTarget(t *testing.T) {
+	location := newTestLocation("location", nil, "", "")
+	location.Spec.NodeGroups = []infrastructurev1alpha1.NodeGroupSpec{{
+		Name: "cache",
+		Nodes: []infrastructurev1alpha1.NodeSpec{
+			{Name: "no-target"},
+			{Name: "ipv6-only", Ipv6: "2001:db8::10"},
+			{Name: "cname", Cname: "node.example.com"},
+			{Name: "base-domain"},
+		},
+	}}
+	location.Spec.BaseDomain = "edge.example.com"
+	manager := newTestLocationManager(t)
+
+	if _, err := manager.ApplyHash(&location, "example.com.", HashFilters{Qtype: dns.TypeA}); err != nil {
+		t.Fatalf("CNAME/base-domain nodes should remain eligible for A: %v", err)
+	}
+
+	location.Spec.NodeGroups[0].Nodes = location.Spec.NodeGroups[0].Nodes[:1]
+	location.Spec.BaseDomain = ""
+	if _, err := manager.ApplyHash(&location, "example.com.", HashFilters{Qtype: dns.TypeAAAA}); err == nil {
+		t.Fatal("node without a usable AAAA target or CNAME/base domain was selected")
 	}
 }
 

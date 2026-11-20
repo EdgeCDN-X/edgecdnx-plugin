@@ -29,6 +29,40 @@ type EdgeCDNX struct {
 type EdgeCDNXResponseWriter struct {
 }
 
+type nodeDNSResolution struct {
+	recordType uint16
+	ip         net.IP
+	cname      string
+}
+
+func resolveNodeDNSResolution(node infrastructurev1alpha1.NodeSpec, locationName, nodeGroupName, baseDomain string, qtype uint16) (nodeDNSResolution, bool) {
+	var ipText string
+	recordType := qtype
+	if qtype == dns.TypeA {
+		ipText = node.Ipv4
+	} else if qtype == dns.TypeAAAA {
+		ipText = node.Ipv6
+	} else {
+		return nodeDNSResolution{}, false
+	}
+
+	if ip := net.ParseIP(ipText); ip != nil {
+		return nodeDNSResolution{recordType: recordType, ip: ip}, true
+	}
+
+	if node.Cname != "" {
+		return nodeDNSResolution{recordType: dns.TypeCNAME, cname: dns.Fqdn(node.Cname)}, true
+	}
+
+	baseDomain = strings.TrimRight(baseDomain, ".")
+	if baseDomain != "" {
+		target := fmt.Sprintf("%s.%s.%s.%s", node.Name, nodeGroupName, locationName, baseDomain)
+		return nodeDNSResolution{recordType: dns.TypeCNAME, cname: dns.Fqdn(target)}, true
+	}
+
+	return nodeDNSResolution{}, false
+}
+
 func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locationName string, nodeGroupName string, baseDomain string, ttl uint32, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
@@ -36,35 +70,25 @@ func (e EdgeCDNX) BuildNodeReponse(node infrastructurev1alpha1.NodeSpec, locatio
 	m.SetReply(r)
 	m.Authoritative = true
 
-	if baseDomain != "" {
-		// Auto expand CNAMES if baseDomain is provided
-		res := new(dns.CNAME)
-		res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}
-		res.Target = fmt.Sprintf("%s.%s.%s.%s.", node.Name, nodeGroupName, locationName, baseDomain)
-		m.Answer = append(m.Answer, res)
-	} else {
-		if node.Cname != "" {
-			// Return a CNAME record pointing to the node's CNAME if specified
-			res := new(dns.CNAME)
-			res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl}
-			res.Target = node.Cname
-			m.Answer = append(m.Answer, res) // Use the res object instead of record
-		} else {
-			// Return A or AAAA records based on the query type if no CNAME is specified
-			if state.Req.Question[0].Qtype == dns.TypeA {
-				res := new(dns.A)
-				res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}
-				parsed := net.ParseIP(node.Ipv4)
-				res.A = parsed
-				m.Answer = append(m.Answer, res)
-			}
-
-			if state.Req.Question[0].Qtype == dns.TypeAAAA {
-				res := new(dns.AAAA)
-				res.Hdr = dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
-				parsed := net.ParseIP(node.Ipv6)
-				res.AAAA = parsed
-				m.Answer = append(m.Answer, res)
+	if len(state.Req.Question) > 0 {
+		resolution, ok := resolveNodeDNSResolution(node, locationName, nodeGroupName, baseDomain, state.Req.Question[0].Qtype)
+		if ok {
+			switch resolution.recordType {
+			case dns.TypeA:
+				m.Answer = append(m.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
+					A:   resolution.ip,
+				})
+			case dns.TypeAAAA:
+				m.Answer = append(m.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
+					AAAA: resolution.ip,
+				})
+			case dns.TypeCNAME:
+				m.Answer = append(m.Answer, &dns.CNAME{
+					Hdr:    dns.RR_Header{Name: state.Name(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl},
+					Target: resolution.cname,
+				})
 			}
 		}
 	}
@@ -110,11 +134,13 @@ func (e EdgeCDNX) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	qname := state.Name()
 	var zones *zoneSnapshot
 	var zone *zoneEntry
-	zones = e.ZoneManager.snapshot.Load()
-	var conflict bool
-	zone, conflict = zones.lookup(qname)
-	if conflict {
-		return dns.RcodeServerFailure, fmt.Errorf("%w for zone containing %s", errConflictingDNS, qname)
+	if e.ZoneManager != nil {
+		zones = e.ZoneManager.snapshot.Load()
+		var conflict bool
+		zone, conflict = zones.lookup(qname)
+		if conflict {
+			return dns.RcodeServerFailure, fmt.Errorf("%w for zone containing %s", errConflictingDNS, qname)
+		}
 	}
 	handled, rcode, err := e.serveDelegation(state, zones, zone)
 	if handled {

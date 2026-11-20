@@ -172,6 +172,11 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 			if node.MaintenanceMode {
 				continue
 			}
+			if filters.Qtype == dns.TypeA || filters.Qtype == dns.TypeAAAA {
+				if _, ok := resolveNodeDNSResolution(node, location.Name, ng.Name, location.Spec.BaseDomain, filters.Qtype); !ok {
+					continue
+				}
+			}
 
 			nodeStatus, exists := location.Status.NodeStatus[node.Name]
 			if !exists {
@@ -243,6 +248,11 @@ func (l *LocationManager) ApplyHash(location *infrastructurev1alpha1.Location, h
 					for _, node := range ng.Nodes {
 						if node.MaintenanceMode {
 							continue
+						}
+						if filters.Qtype == dns.TypeA || filters.Qtype == dns.TypeAAAA {
+							if _, ok := resolveNodeDNSResolution(node, childLocation.Name, ng.Name, childLocation.Spec.BaseDomain, filters.Qtype); !ok {
+								continue
+							}
 						}
 
 						nodeStatus, exists := childLocation.Status.NodeStatus[node.Name]
